@@ -1,0 +1,4 @@
+{
+  "setup_script": "pip install -e \".[dev]\"",
+  "verification_script": "pytest"
+}
