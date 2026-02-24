@@ -1,0 +1,17 @@
+syntax = "proto3";
+package entropy;
+
+service EntropyService {
+  rpc GetEntropy (EntropyRequest) returns (EntropyResponse);
+  rpc StreamEntropy (stream EntropyRequest) returns (stream EntropyResponse);
+}
+
+message EntropyRequest {
+  int32 bytes_needed = 1;
+}
+
+message EntropyResponse {
+  bytes data = 1;
+  int64 timestamp_ns = 2;
+  string device_id = 3;
+}
