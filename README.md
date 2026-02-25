@@ -70,8 +70,8 @@ The fastest way to get running — a reference server using `os.urandom()`:
 
 ```bash
 # Clone and run the example server
-git clone https://github.com/qr-sampler/qr-sampler.git
-cd qr-sampler
+git clone https://github.com/alchemystack/Quantum-random-vLLM-sampler.git
+cd Quantum-random-vLLM-sampler
 pip install qr-sampler[grpc]
 
 python examples/servers/simple_urandom_server.py
@@ -79,6 +79,19 @@ python examples/servers/simple_urandom_server.py
 ```
 
 ### 3. Configure vLLM to use qr-sampler
+
+**Windows (CMD):**
+
+```cmd
+set QR_ENTROPY_SOURCE_TYPE=quantum_grpc
+set QR_GRPC_SERVER_ADDRESS=localhost:50051
+set QR_GRPC_MODE=unary
+
+:: Start vLLM with the plugin
+vllm serve meta-llama/Llama-3.2-1B
+```
+
+**macOS / Linux:**
 
 ```bash
 export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
@@ -187,6 +200,19 @@ qr-sampler supports three gRPC transport modes for communicating with entropy se
 | **Bidirectional** | `bidi_streaming` | ~50-100us (same machine) | Production, lowest latency |
 
 For co-located hardware, use Unix domain sockets for the lowest possible latency:
+
+**Windows (CMD):**
+
+```cmd
+:: Server
+python simple_urandom_server.py --address unix:///var/run/qrng.sock
+
+:: Client config
+set QR_GRPC_SERVER_ADDRESS=unix:///var/run/qrng.sock
+set QR_GRPC_MODE=bidi_streaming
+```
+
+**macOS / Linux:**
 
 ```bash
 # Server
@@ -333,6 +359,15 @@ python my_qrng_server.py --port 50051
 
 4. **Configure qr-sampler:**
 
+**Windows (CMD):**
+
+```cmd
+set QR_GRPC_SERVER_ADDRESS=localhost:50051
+set QR_ENTROPY_SOURCE_TYPE=quantum_grpc
+```
+
+**macOS / Linux:**
+
 ```bash
 export QR_GRPC_SERVER_ADDRESS=localhost:50051
 export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
@@ -398,6 +433,15 @@ sudo systemctl enable --now qr-entropy-server
 ```
 
 **Unix domain sockets** (lowest latency for co-located hardware):
+
+**Windows (CMD):**
+
+```cmd
+python my_qrng_server.py --address unix:///var/run/qrng.sock
+set QR_GRPC_SERVER_ADDRESS=unix:///var/run/qrng.sock
+```
+
+**macOS / Linux:**
 
 ```bash
 python my_qrng_server.py --address unix:///var/run/qrng.sock
@@ -574,8 +618,8 @@ pytest tests/test_statistical_properties.py -v
 
 ```bash
 # Clone and install
-git clone https://github.com/qr-sampler/qr-sampler.git
-cd qr-sampler
+git clone https://github.com/alchemystack/Quantum-random-vLLM-sampler.git
+cd Quantum-random-vLLM-sampler
 pip install -e ".[dev]"
 
 # Run tests
