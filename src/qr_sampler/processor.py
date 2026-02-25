@@ -259,7 +259,7 @@ class QRSamplerLogitsProcessor:
             or a numpy array if torch is unavailable.
         """
         try:
-            import torch  # type: ignore[import-not-found]
+            import torch
 
             return torch.full(
                 (self._vocab_size,),

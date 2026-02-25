@@ -93,6 +93,10 @@ warn_unused_configs = true
 packages = ["qr_sampler"]
 mypy_path = "src"
 
+[[tool.mypy.overrides]]
+module = ["grpc", "grpc.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 source = ["src/qr_sampler"]
 omit = [
