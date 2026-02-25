@@ -30,6 +30,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Logs
 *.log
@@ -39,3 +40,9 @@ Thumbs.db
 
 # Node (in case any tooling uses it)
 node_modules/
+
+# Environment files
+.env
+
+# Setuptools SCM
+src/qr_sampler/_version.py

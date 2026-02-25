@@ -1,0 +1,86 @@
+# systemd unit file for the qr-sampler entropy server.
+#
+# Installation:
+#   1. Copy this file to /etc/systemd/system/:
+#      sudo cp qr-entropy-server.service /etc/systemd/system/
+#
+#   2. Create the environment file:
+#      sudo cp qr-entropy-server.env /etc/default/qr-entropy-server
+#      sudo chmod 600 /etc/default/qr-entropy-server
+#
+#   3. Create a dedicated service user (optional but recommended):
+#      sudo useradd --system --no-create-home --shell /usr/sbin/nologin qr-entropy
+#
+#   4. Enable and start:
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable qr-entropy-server
+#      sudo systemctl start qr-entropy-server
+#
+#   5. Check status:
+#      sudo systemctl status qr-entropy-server
+#      sudo journalctl -u qr-entropy-server -f
+#
+# To use a custom server script, edit the ExecStart line or override
+# ENTROPY_SERVER_SCRIPT in the environment file.
+
+[Unit]
+Description=qr-sampler Entropy Server (gRPC)
+Documentation=https://github.com/qr-sampler/qr-sampler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Service user — create with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin qr-entropy
+User=qr-entropy
+Group=qr-entropy
+
+# Environment configuration.
+EnvironmentFile=-/etc/default/qr-entropy-server
+
+# Working directory — adjust to your installation path.
+WorkingDirectory=/opt/qr-sampler
+
+# Start the entropy server.
+# Override ENTROPY_SERVER_SCRIPT in the env file to use a different server.
+ExecStart=/opt/qr-sampler/venv/bin/python \
+    ${ENTROPY_SERVER_SCRIPT:-/opt/qr-sampler/examples/servers/simple_urandom_server.py} \
+    --address ${LISTEN_ADDRESS:-0.0.0.0:50051} \
+    --max-workers ${MAX_WORKERS:-4}
+
+# Restart on failure with exponential backoff.
+Restart=on-failure
+RestartSec=5
+RestartMaxDelaySec=60
+
+# Graceful shutdown — send SIGTERM, wait 10s, then SIGKILL.
+TimeoutStopSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Security hardening.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+
+# If you need access to QRNG hardware devices, add:
+#   PrivateDevices=no
+#   DeviceAllow=/dev/qrng0 rw
+# and remove PrivateDevices=yes above.
+
+# Logging — captured by journald by default.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qr-entropy-server
+
+[Install]
+WantedBy=multi-user.target

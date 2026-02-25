@@ -1,0 +1,53 @@
+# Dockerfile for qr-sampler entropy servers.
+#
+# Builds a minimal image that can run any of the example entropy servers.
+# The server script is selected at runtime via the ENTROPY_SERVER env var.
+#
+# Build:
+#   docker build -f Dockerfile.entropy-server -t qr-entropy-server ../..
+#
+# Run (urandom server):
+#   docker run -p 50051:50051 qr-entropy-server
+#
+# Run (timing noise server):
+#   docker run -p 50051:50051 -e ENTROPY_SERVER=timing_noise_server.py qr-entropy-server
+#
+# Run (your custom server):
+#   docker run -p 50051:50051 -v /path/to/my_server.py:/app/servers/my_server.py \
+#     -e ENTROPY_SERVER=my_server.py qr-entropy-server
+
+FROM python:3.12-slim AS base
+
+# Prevent Python from writing .pyc files and enable unbuffered output.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install only the runtime dependencies needed for the entropy server.
+# We install qr-sampler[grpc] which brings in grpcio, protobuf, numpy,
+# pydantic, and pydantic-settings.
+COPY pyproject.toml ./
+COPY src/ ./src/
+
+RUN pip install --no-cache-dir -e ".[grpc]"
+
+# Copy the example servers into the image.
+COPY examples/servers/ ./servers/
+
+# Default server to run. Override with -e ENTROPY_SERVER=<filename>.
+ENV ENTROPY_SERVER=simple_urandom_server.py
+
+# The default gRPC port.
+EXPOSE 50051
+
+# Health check: attempt a gRPC connectivity check.
+# Falls back to checking if the process is alive.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD python -c "import grpc; ch = grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(ch).result(timeout=3)" \
+    || exit 1
+
+# Run the selected server script. The entrypoint allows passing
+# additional arguments (e.g., --port, --verbose).
+ENTRYPOINT ["sh", "-c", "python /app/servers/${ENTROPY_SERVER} \"$@\"", "--"]
+CMD ["--port", "50051"]

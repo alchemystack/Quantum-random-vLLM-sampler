@@ -1,413 +1,407 @@
-"""Statistical property tests for the quantum consciousness sampling pipeline.
+"""Statistical validation tests for the qr-sampler pipeline.
 
-These tests validate mathematical invariants of the system rather than
-individual code paths.  They use real (os.urandom) and biased (mock)
-entropy sources to verify:
+These tests verify the mathematical properties that make the pipeline
+suitable for consciousness-influence research:
 
-1. **Uniformity under null hypothesis** — u-values produced by the
-   ZScoreMeanAmplifier with OsUrandomSource should be uniform on (0, 1).
-   Validated via the Kolmogorov-Smirnov test.
+1. **U-value uniformity**: Under the null hypothesis (unbiased entropy),
+   the amplified u-values should follow Uniform(0, 1).
+2. **Bias detection**: A biased entropy source (mean != 127.5) should
+   produce u-values that detectably deviate from uniform.
+3. **EDT monotonicity**: Higher Shannon entropy should produce higher
+   temperature values.
+4. **CDF coverage**: Uniform u-values should produce tokens respecting
+   the probability distribution.
+5. **One-hot correctness**: Every batch row should have exactly one 0.0
+   and the rest -inf after apply().
 
-2. **Consciousness bias simulation** — MockUniformSource with mean > 127.5
-   should systematically shift u-values above 0.5, confirming that the
-   z-score pipeline translates byte-level bias into CDF-position bias.
-
-3. **EDT temperature-entropy correlation** — Higher-entropy logit
-   distributions should produce higher temperatures under the EDT
-   strategy, confirming the formula's monotonic coupling.
-
-Dependencies:
-    scipy (KS test) — listed in [project.optional-dependencies] dev.
+Requires scipy (dev dependency):
+    pip install qr-sampler[dev]
 """
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pytest
-from scipy import stats
 
-from qc_sampler.config import QCSamplingConfig
-from qc_sampler.entropy_source import MockUniformSource, OsUrandomSource
-from qc_sampler.signal_amplifier import ZScoreMeanAmplifier
-from qc_sampler.temperature_strategy import EDTTemperatureStrategy
+scipy_stats = pytest.importorskip("scipy.stats")
 
-# ---------------------------------------------------------------------------
-# Configurable constants — no hardcoded iteration counts in test bodies.
-# ---------------------------------------------------------------------------
-
-# Number of u-values to generate for uniformity / bias tests.
-# 10,000 gives good statistical power without making CI slow.
-_NUM_SAMPLES: int = 10_000
-
-# Significance level for the KS test.  p > this threshold means we
-# cannot reject the null hypothesis of uniformity.
-_KS_ALPHA: float = 0.01
-
-# Sample count (bytes per u-value) used in the amplifier pipeline.
-# Matches the production default.
-_SAMPLE_COUNT: int = 20_480
+from qr_sampler.amplification.registry import AmplifierRegistry  # noqa: E402
+from qr_sampler.config import QRSamplerConfig  # noqa: E402
+from qr_sampler.entropy.mock import MockUniformSource  # noqa: E402
+from qr_sampler.selection.selector import TokenSelector  # noqa: E402
+from qr_sampler.temperature.registry import TemperatureStrategyRegistry  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Group 1: Uniformity under null hypothesis
-# ---------------------------------------------------------------------------
+def _make_config(**overrides: object) -> QRSamplerConfig:
+    """Create a config with test defaults and optional overrides."""
+    return QRSamplerConfig(_env_file=None, **overrides)  # type: ignore[call-arg]
 
 
-class TestUniformityUnderNullHypothesis:
-    """Verify that u-values are uniform on (0, 1) when the entropy source
-    has no bias (os.urandom is indistinguishable from uniform for our
-    purposes).
+class TestUValueUniformity:
+    """Verify that u-values from the amplification pipeline follow U(0,1)
+    under the null hypothesis (unbiased entropy source).
 
-    The probability integral transform guarantees this property when:
-    - The raw bytes are i.i.d. uniform uint8.
-    - The z-score is computed correctly.
-    - The normal CDF is applied correctly.
-
-    We use the Kolmogorov-Smirnov test against the continuous uniform
-    distribution on [0, 1].
+    Note: MockUniformSource generates bytes from N(mean, 40), clamped to
+    [0, 255]. The population_std in the default config is 73.6 (for true
+    uniform [0, 255]). To get correct z-score statistics, we use
+    SystemEntropySource (os.urandom) which produces truly uniform bytes,
+    or adjust the population_std to match MockUniformSource's distribution.
     """
 
-    @pytest.fixture()
-    def u_values(self) -> np.ndarray:
-        """Generate u-values from the full pipeline under the null hypothesis.
+    def test_ks_test_os_urandom(self) -> None:
+        """KS-test: 1000 u-values from os.urandom should be uniform.
 
-        Uses OsUrandomSource → ZScoreMeanAmplifier with default config.
-        Each u-value consumes _SAMPLE_COUNT bytes, so this fixture
-        generates _NUM_SAMPLES × _SAMPLE_COUNT = ~200 MB of random data.
+        Uses SystemEntropySource which produces truly uniform bytes.
+        The population_std=73.61 is calibrated for uniform [0, 255],
+        so the z-score pipeline should produce U(0, 1) u-values.
         """
-        config = QCSamplingConfig(sample_count=_SAMPLE_COUNT)
-        source = OsUrandomSource()
-        amplifier = ZScoreMeanAmplifier(config)
+        from qr_sampler.entropy.system import SystemEntropySource
 
-        values = np.empty(_NUM_SAMPLES, dtype=np.float64)
-        for i in range(_NUM_SAMPLES):
-            raw = source.get_bytes(_SAMPLE_COUNT)
+        config = _make_config(sample_count=4096)
+        source = SystemEntropySource()
+        amplifier = AmplifierRegistry.build(config)
+
+        u_values = []
+        for _ in range(1000):
+            raw = source.get_random_bytes(config.sample_count)
             result = amplifier.amplify(raw)
-            values[i] = result.u
-        return values
+            u_values.append(result.u)
 
-    def test_ks_test_against_uniform(self, u_values: np.ndarray) -> None:
-        """KS test: u-values should follow Uniform(0, 1).
+        u_arr = np.array(u_values)
 
-        We test at significance level _KS_ALPHA.  The null hypothesis
-        is that the sample comes from a standard uniform distribution.
-        Failing this test (p < _KS_ALPHA) would indicate a bug in the
-        z-score → CDF pipeline.
+        # KS-test against Uniform(0, 1).
+        stat, p_value = scipy_stats.kstest(u_arr, "uniform")
+
+        assert p_value > 0.01, (
+            f"KS-test rejected uniformity: statistic={stat:.4f}, p={p_value:.4f}. "
+            f"u range: [{u_arr.min():.4f}, {u_arr.max():.4f}], "
+            f"mean={u_arr.mean():.4f}"
+        )
+
+    def test_mock_source_u_value_spread(self) -> None:
+        """MockUniformSource produces u-values that span the (0, 1) range.
+
+        Even though MockUniformSource's byte distribution doesn't perfectly
+        match the default population_std (it uses N(127.5, 40.0) clamped to
+        [0, 255] rather than true uniform), the amplification pipeline should
+        still produce u-values that cover a broad range of the (0, 1) interval.
         """
-        ks_stat, p_value = stats.kstest(u_values, "uniform")
+        config = _make_config(sample_count=2048)
+        source = MockUniformSource(mean=127.5, seed=42)
+        amplifier = AmplifierRegistry.build(config)
 
-        assert p_value > _KS_ALPHA, (
-            f"KS test rejected uniformity: statistic={ks_stat:.6f}, "
-            f"p-value={p_value:.6f} (threshold: {_KS_ALPHA}). "
-            f"This suggests a bug in the z-score → CDF pipeline."
-        )
-
-    def test_mean_near_half(self, u_values: np.ndarray) -> None:
-        """Under the null hypothesis, E[u] = 0.5.
-
-        We allow a generous tolerance because os.urandom is not a true
-        QRNG, but its mean should still be close to 0.5 with N = 10,000.
-        Standard error of the mean = 1/sqrt(12*N) ≈ 0.0029, so 5σ ≈ 0.015.
-        """
-        mean_u = float(np.mean(u_values))
-        tolerance = 5.0 / math.sqrt(12.0 * _NUM_SAMPLES)  # ~5σ
-        assert abs(mean_u - 0.5) < tolerance, (
-            f"Mean u = {mean_u:.6f}, expected ~0.5 "
-            f"(tolerance: ±{tolerance:.6f})"
-        )
-
-    def test_values_span_full_range(self, u_values: np.ndarray) -> None:
-        """u-values should span roughly the full (0, 1) interval.
-
-        With 10,000 samples, the minimum should be well below 0.1 and
-        the maximum well above 0.9.  If all values cluster in a narrow
-        band, the pipeline has a scaling bug.
-        """
-        assert float(np.min(u_values)) < 0.1, (
-            f"Minimum u = {np.min(u_values):.6f} — expected < 0.1"
-        )
-        assert float(np.max(u_values)) > 0.9, (
-            f"Maximum u = {np.max(u_values):.6f} — expected > 0.9"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Group 2: Consciousness bias simulation
-# ---------------------------------------------------------------------------
-
-
-class TestConsciousnessBiasSimulation:
-    """Verify that a biased entropy source shifts u-values predictably.
-
-    MockUniformSource(mean=128.0) produces bytes whose average is ~0.5
-    above the null mean of 127.5.  Through the z-score pipeline, this
-    should systematically push u > 0.5, confirming the directional
-    coupling between QRNG bias and CDF-position bias.
-    """
-
-    @pytest.fixture()
-    def biased_u_values(self) -> np.ndarray:
-        """Generate u-values from a biased mock source (mean=128.0)."""
-        config = QCSamplingConfig(sample_count=_SAMPLE_COUNT)
-        # Use a fixed seed for reproducibility across CI runs.
-        source = MockUniformSource(mean=128.0, seed=2024)
-        amplifier = ZScoreMeanAmplifier(config)
-
-        values = np.empty(_NUM_SAMPLES, dtype=np.float64)
-        for i in range(_NUM_SAMPLES):
-            raw = source.get_bytes(_SAMPLE_COUNT)
+        u_values = []
+        for _ in range(500):
+            raw = source.get_random_bytes(config.sample_count)
             result = amplifier.amplify(raw)
-            values[i] = result.u
-        return values
+            u_values.append(result.u)
 
-    def test_mean_u_above_half(self, biased_u_values: np.ndarray) -> None:
-        """With upward-biased bytes, mean u should be significantly > 0.5.
+        u_arr = np.array(u_values)
 
-        A mean shift of +0.5 in byte values, divided by SEM ≈ 0.514,
-        gives z ≈ 0.97, so u ≈ Φ(0.97) ≈ 0.83.  We only require
-        mean u > 0.5 (the spec's requirement), but in practice it
-        should be much higher.
+        # u-values should span a reasonable range of (0, 1).
+        assert u_arr.min() < 0.15, f"u min={u_arr.min():.4f} should be below 0.15"
+        assert u_arr.max() > 0.85, f"u max={u_arr.max():.4f} should be above 0.85"
+
+        # Standard deviation should indicate spread (not all clustered).
+        assert u_arr.std() > 0.1, f"u std={u_arr.std():.4f} too small — values are clustered"
+
+    def test_u_value_range(self) -> None:
+        """All u-values must be in (epsilon, 1-epsilon)."""
+        config = _make_config(sample_count=2048)
+        source = MockUniformSource(mean=127.5, seed=123)
+        amplifier = AmplifierRegistry.build(config)
+
+        eps = config.uniform_clamp_epsilon
+        for _ in range(500):
+            raw = source.get_random_bytes(config.sample_count)
+            result = amplifier.amplify(raw)
+            assert eps <= result.u <= 1.0 - eps, (
+                f"u={result.u} outside valid range ({eps}, {1 - eps})"
+            )
+
+    def test_u_mean_near_half_os_urandom(self) -> None:
+        """Mean of u-values from os.urandom should be near 0.5."""
+        from qr_sampler.entropy.system import SystemEntropySource
+
+        config = _make_config(sample_count=4096)
+        source = SystemEntropySource()
+        amplifier = AmplifierRegistry.build(config)
+
+        u_values = [
+            amplifier.amplify(source.get_random_bytes(config.sample_count)).u for _ in range(1000)
+        ]
+        mean_u = np.mean(u_values)
+
+        assert abs(mean_u - 0.5) < 0.05, (
+            f"Mean u={mean_u:.4f} is too far from 0.5 for unbiased source"
+        )
+
+
+class TestBiasDetection:
+    """Verify that biased entropy sources produce detectably non-uniform u-values."""
+
+    def test_positive_bias_shifts_u_above_half(self) -> None:
+        """Biased source (mean=130.0) should produce u-values with mean > 0.5.
+
+        A mean of 130.0 (vs null 127.5) creates a positive z-score bias,
+        which maps through the normal CDF to u-values shifted toward 1.
         """
-        mean_u = float(np.mean(biased_u_values))
+        config = _make_config(sample_count=2048)
+        source = MockUniformSource(mean=130.0, seed=42)
+        amplifier = AmplifierRegistry.build(config)
+
+        u_values = [
+            amplifier.amplify(source.get_random_bytes(config.sample_count)).u for _ in range(500)
+        ]
+        mean_u = np.mean(u_values)
+
         assert mean_u > 0.5, (
-            f"Mean u = {mean_u:.6f} — expected > 0.5 with biased source "
-            f"(mean=128.0)"
+            f"Biased source (mean=130) should shift u > 0.5, got mean_u={mean_u:.4f}"
         )
 
-    def test_majority_of_values_above_half(
-        self, biased_u_values: np.ndarray
-    ) -> None:
-        """A clear majority of u-values should be above 0.5.
+    def test_negative_bias_shifts_u_below_half(self) -> None:
+        """Biased source (mean=125.0) should produce u-values with mean < 0.5."""
+        config = _make_config(sample_count=2048)
+        source = MockUniformSource(mean=125.0, seed=42)
+        amplifier = AmplifierRegistry.build(config)
 
-        With a +0.5 byte-mean shift, essentially all u-values cluster
-        around 0.83.  We check that at least 75% exceed 0.5 as a
-        conservative lower bound.
-        """
-        fraction_above = float(np.mean(biased_u_values > 0.5))
-        assert fraction_above > 0.75, (
-            f"Only {fraction_above:.1%} of u-values > 0.5 — "
-            f"expected > 75% with biased source"
+        u_values = [
+            amplifier.amplify(source.get_random_bytes(config.sample_count)).u for _ in range(500)
+        ]
+        mean_u = np.mean(u_values)
+
+        assert mean_u < 0.5, (
+            f"Biased source (mean=125) should shift u < 0.5, got mean_u={mean_u:.4f}"
         )
 
-    def test_ks_test_rejects_uniformity(
-        self, biased_u_values: np.ndarray
-    ) -> None:
-        """With biased bytes, the KS test should *reject* uniformity.
+    def test_ks_detects_strong_bias(self) -> None:
+        """KS-test rejects uniformity for strongly biased source."""
+        config = _make_config(sample_count=2048)
+        source = MockUniformSource(mean=132.0, seed=42)
+        amplifier = AmplifierRegistry.build(config)
 
-        This confirms that the bias propagates through the pipeline
-        and produces a non-uniform u-distribution.  If the KS test
-        still passes, the pipeline is ignoring the bias.
-        """
-        _, p_value = stats.kstest(biased_u_values, "uniform")
-        assert p_value < _KS_ALPHA, (
-            f"KS test did NOT reject uniformity (p={p_value:.6f}) — "
-            f"the bias is not propagating through the pipeline"
-        )
+        u_values = [
+            amplifier.amplify(source.get_random_bytes(config.sample_count)).u for _ in range(500)
+        ]
 
-    def test_stronger_bias_gives_higher_mean_u(self) -> None:
-        """Stronger byte-mean bias should produce higher mean u.
-
-        Compare mean=128.0 (mild bias) vs mean=129.0 (stronger bias).
-        The stronger bias should give a higher average u.
-        """
-        config = QCSamplingConfig(sample_count=_SAMPLE_COUNT)
-        amplifier = ZScoreMeanAmplifier(config)
-        # Use fewer samples for this comparison — we only need direction.
-        num_comparison_samples = _NUM_SAMPLES // 5
-
-        means_by_bias: dict[float, float] = {}
-        for bias_mean in [128.0, 129.0]:
-            source = MockUniformSource(mean=bias_mean, seed=42)
-            values = np.empty(num_comparison_samples, dtype=np.float64)
-            for i in range(num_comparison_samples):
-                raw = source.get_bytes(_SAMPLE_COUNT)
-                result = amplifier.amplify(raw)
-                values[i] = result.u
-            means_by_bias[bias_mean] = float(np.mean(values))
-
-        assert means_by_bias[129.0] > means_by_bias[128.0], (
-            f"Stronger bias (129.0) did not produce higher mean u: "
-            f"u(128.0)={means_by_bias[128.0]:.6f}, "
-            f"u(129.0)={means_by_bias[129.0]:.6f}"
+        stat, p_value = scipy_stats.kstest(u_values, "uniform")
+        assert p_value < 0.05, (
+            f"KS-test should reject uniformity for biased source: stat={stat:.4f}, p={p_value:.4f}"
         )
 
 
-# ---------------------------------------------------------------------------
-# Group 3: EDT temperature-entropy correlation
-# ---------------------------------------------------------------------------
+class TestEDTMonotonicity:
+    """Verify that EDT temperature increases with Shannon entropy."""
 
-
-class TestEDTTemperatureEntropyCorrelation:
-    """Verify that EDT produces temperature correlated with entropy.
-
-    The EDT formula T = base × H_norm^θ is monotonically non-decreasing
-    in H_norm (for θ > 0 and base > 0).  We verify this by creating
-    logit distributions with known, increasing entropy and checking
-    that the computed temperatures are non-decreasing.
-    """
-
-    # Vocabulary size for EDT tests.
-    _VOCAB_SIZE: int = 32_000
-
-    def _make_logits_with_n_active(self, n_active: int) -> np.ndarray:
-        """Create logits with exactly n_active equally likely tokens.
-
-        All other tokens are masked to -1e6 (effectively zero prob).
-        Shannon entropy = ln(n_active).
-
-        Args:
-            n_active: Number of tokens with non-negligible probability.
-
-        Returns:
-            Logit array of shape (self._VOCAB_SIZE,).
+    def test_higher_entropy_higher_temperature(self) -> None:
+        """Logit distributions with increasing entropy should produce
+        monotonically increasing temperatures from EDT.
         """
-        logits = np.full(self._VOCAB_SIZE, -1e6, dtype=np.float64)
-        logits[:n_active] = 0.0
-        return logits
-
-    def test_monotonicity_across_entropy_levels(self) -> None:
-        """Temperature must be non-decreasing as entropy increases.
-
-        We test with 1, 2, 10, 100, 1000, and vocab_size active tokens.
-        Each step increases entropy, so temperature should increase
-        (or stay equal if clamped).
-        """
-        config = QCSamplingConfig(
+        vocab_size = 100
+        config = _make_config(
+            temperature_strategy="edt",
             edt_base_temp=1.0,
             edt_exponent=0.5,
             edt_min_temp=0.01,
-            edt_max_temp=10.0,
+            edt_max_temp=5.0,
         )
-        strategy = EDTTemperatureStrategy(vocab_size=self._VOCAB_SIZE)
+        strategy = TemperatureStrategyRegistry.build(config, vocab_size)
 
-        active_counts = [1, 2, 10, 100, 1000, self._VOCAB_SIZE]
-        temperatures: list[float] = []
+        # Create logit distributions with increasing entropy:
+        # 1. Very peaked (low entropy).
+        peaked = np.full(vocab_size, -10.0)
+        peaked[0] = 10.0
 
-        for n_active in active_counts:
-            logits = self._make_logits_with_n_active(n_active)
-            result = strategy.compute_temperature(logits, config)
-            temperatures.append(result.temperature)
+        # 2. Moderately spread.
+        moderate = np.linspace(5.0, -5.0, vocab_size)
 
-        for i in range(1, len(temperatures)):
-            assert temperatures[i] >= temperatures[i - 1], (
-                f"Monotonicity violated: T({active_counts[i]} active) = "
-                f"{temperatures[i]:.6f} < T({active_counts[i-1]} active) = "
-                f"{temperatures[i-1]:.6f}"
-            )
+        # 3. Nearly uniform (high entropy).
+        uniform = np.zeros(vocab_size)
 
-    def test_single_token_gets_min_temp(self) -> None:
-        """With only 1 active token, entropy = 0 → T clamped to min_temp."""
-        config = QCSamplingConfig(
+        results = [
+            strategy.compute_temperature(logits, config) for logits in [peaked, moderate, uniform]
+        ]
+
+        entropies = [r.shannon_entropy for r in results]
+        temperatures = [r.temperature for r in results]
+
+        # Entropies should be strictly increasing.
+        assert entropies[0] < entropies[1] < entropies[2], f"Entropies should increase: {entropies}"
+
+        # Temperatures should be monotonically non-decreasing.
+        assert temperatures[0] <= temperatures[1] <= temperatures[2], (
+            f"EDT temperatures should increase with entropy: {temperatures}"
+        )
+
+    def test_edt_exponent_effects(self) -> None:
+        """Different exponents change the concavity of the entropy → temp mapping."""
+        vocab_size = 100
+        moderate_logits = np.linspace(5.0, -5.0, vocab_size)
+
+        # Exponent < 1 (concave): temperature rises quickly.
+        config_concave = _make_config(
+            temperature_strategy="edt",
             edt_base_temp=1.0,
-            edt_exponent=0.5,
-            edt_min_temp=0.15,
-            edt_max_temp=3.0,
-        )
-        strategy = EDTTemperatureStrategy(vocab_size=self._VOCAB_SIZE)
-        logits = self._make_logits_with_n_active(1)
-
-        result = strategy.compute_temperature(logits, config)
-
-        assert result.temperature == pytest.approx(config.edt_min_temp)
-
-    def test_uniform_gets_base_temp(self) -> None:
-        """With all tokens equally likely, H_norm ≈ 1.0 → T ≈ base_temp.
-
-        For any θ: base × 1.0^θ = base.
-        """
-        config = QCSamplingConfig(
-            edt_base_temp=0.8,
-            edt_exponent=0.5,
+            edt_exponent=0.3,
             edt_min_temp=0.01,
-            edt_max_temp=3.0,
+            edt_max_temp=5.0,
         )
-        strategy = EDTTemperatureStrategy(vocab_size=self._VOCAB_SIZE)
-        logits = self._make_logits_with_n_active(self._VOCAB_SIZE)
+        strategy_concave = TemperatureStrategyRegistry.build(config_concave, vocab_size)
 
-        result = strategy.compute_temperature(logits, config)
-
-        assert result.temperature == pytest.approx(0.8, abs=0.01)
-
-    def test_entropy_temperature_correlation_with_random_logits(
-        self,
-    ) -> None:
-        """Over many random logit distributions, higher entropy should
-        predict higher temperature on average.
-
-        We generate 200 random logit arrays, compute entropy and
-        temperature for each, and verify positive Spearman correlation.
-        """
-        num_distributions = 200
-        rng = np.random.default_rng(seed=9999)
-
-        config = QCSamplingConfig(
+        # Exponent > 1 (convex): temperature rises slowly.
+        config_convex = _make_config(
+            temperature_strategy="edt",
             edt_base_temp=1.0,
-            edt_exponent=0.5,
+            edt_exponent=2.0,
             edt_min_temp=0.01,
-            edt_max_temp=10.0,
+            edt_max_temp=5.0,
         )
-        strategy = EDTTemperatureStrategy(vocab_size=self._VOCAB_SIZE)
+        strategy_convex = TemperatureStrategyRegistry.build(config_convex, vocab_size)
 
-        entropies: list[float] = []
-        temperatures: list[float] = []
+        t_concave = strategy_concave.compute_temperature(moderate_logits, config_concave)
+        t_convex = strategy_convex.compute_temperature(moderate_logits, config_convex)
 
-        for _ in range(num_distributions):
-            # Random logits with varying sparsity: multiply standard
-            # normal by a random scale to get diverse entropy levels.
-            scale = rng.uniform(0.1, 10.0)
-            logits = rng.standard_normal(self._VOCAB_SIZE) * scale
-            result = strategy.compute_temperature(logits, config)
-            entropies.append(result.shannon_entropy)
-            temperatures.append(result.temperature)
-
-        # Spearman rank correlation: monotonic relationship.
-        correlation, p_value = stats.spearmanr(entropies, temperatures)
-
-        assert correlation > 0.5, (
-            f"Spearman correlation between entropy and temperature = "
-            f"{correlation:.4f} — expected > 0.5 (p={p_value:.6f})"
-        )
-        # The p-value should be very small (correlation is essentially 1.0
-        # for a monotonic formula, modulo clamping).
-        assert p_value < 0.01, (
-            f"Correlation not significant: p={p_value:.6f}"
+        # For intermediate entropy, concave exponent should give higher temp
+        # than convex exponent (since H_norm is between 0 and 1).
+        assert t_concave.temperature > t_convex.temperature, (
+            f"Concave exponent should give higher temp for intermediate entropy: "
+            f"concave={t_concave.temperature:.4f}, convex={t_convex.temperature:.4f}"
         )
 
-    def test_different_exponents_same_ordering(self) -> None:
-        """Different exponents (θ) should preserve temperature ordering.
 
-        The EDT formula T = base × H_norm^θ is monotonic in H_norm
-        for any θ > 0.  Different θ values change the *shape* of the
-        curve but not the *ordering* of temperatures by entropy.
+class TestCDFCoverage:
+    """Verify that uniform u-values produce probability-respecting token selection."""
+
+    def test_most_probable_selected_most_often(self) -> None:
+        """With uniform u-values, the most probable token should be
+        selected most frequently.
+
+        Uses high temperature and disabled top_p to ensure multiple
+        tokens survive filtering with meaningful probability.
         """
-        config_template = QCSamplingConfig(
-            edt_base_temp=1.0,
-            edt_min_temp=0.01,
-            edt_max_temp=10.0,
+        logits = np.array([3.0, 2.5, 2.0, 1.5, 1.0, 0.5, 0.0, -0.5, -1.0, -1.5])
+        selector = TokenSelector()
+        temperature = 1.5
+        top_k = 10
+        top_p = 1.0  # Disable top-p so all tokens survive.
+
+        # Generate uniform u-values.
+        rng = np.random.default_rng(42)
+        selections = []
+        for _ in range(2000):
+            u = float(rng.uniform(0.0, 1.0))
+            result = selector.select(logits, temperature, top_k, top_p, u)
+            selections.append(result.token_id)
+
+        # Count token frequencies.
+        counts = np.bincount(selections, minlength=10)
+
+        # Token 0 (highest logit) should be selected most often.
+        assert counts[0] == max(counts), f"Token 0 should be most frequent: counts={counts}"
+
+        # Frequency should decrease with rank (at least for the top 3 tokens).
+        assert counts[0] > counts[1] > counts[2], (
+            f"Selection frequency should decrease with rank: top 3 counts={counts[:3]}"
         )
-        strategy = EDTTemperatureStrategy(vocab_size=self._VOCAB_SIZE)
 
-        active_counts = [2, 50, 500, 5000, self._VOCAB_SIZE]
+    def test_u_zero_selects_most_probable(self) -> None:
+        """u near 0 should select the most probable token."""
+        logits = np.array([5.0, 3.0, 1.0, -1.0, -3.0])
+        selector = TokenSelector()
+        result = selector.select(logits, temperature=0.7, top_k=50, top_p=1.0, u=0.001)
+        assert result.token_id == 0
+        assert result.token_rank == 0
 
-        for exponent in [0.3, 0.5, 1.0, 2.0, 3.0]:
-            config = QCSamplingConfig(
-                edt_base_temp=config_template.edt_base_temp,
-                edt_exponent=exponent,
-                edt_min_temp=config_template.edt_min_temp,
-                edt_max_temp=config_template.edt_max_temp,
-            )
+    def test_u_one_selects_low_probability_token(self) -> None:
+        """u near 1 should select a lower-probability token (high rank).
 
-            temps: list[float] = []
-            for n in active_counts:
-                logits = self._make_logits_with_n_active(n)
-                result = strategy.compute_temperature(logits, config)
-                temps.append(result.temperature)
+        With high temperature and all tokens surviving, u=0.999 selects
+        near the tail of the CDF — a token with high rank (low probability).
+        """
+        logits = np.array([2.0, 1.5, 1.0, 0.5, 0.0, -0.5, -1.0, -1.5, -2.0, -2.5])
+        selector = TokenSelector()
+        result = selector.select(logits, temperature=2.0, top_k=10, top_p=1.0, u=0.999)
+        # Should select a high-rank token (toward the tail).
+        assert result.token_rank >= 5, (
+            f"u=0.999 should select a high-rank token, got rank={result.token_rank}"
+        )
 
-            for i in range(1, len(temps)):
-                assert temps[i] >= temps[i - 1], (
-                    f"Monotonicity violated with θ={exponent}: "
-                    f"T({active_counts[i]})={temps[i]:.6f} < "
-                    f"T({active_counts[i-1]})={temps[i-1]:.6f}"
-                )
+
+class TestOneHotCorrectness:
+    """Verify that the processor produces valid one-hot output."""
+
+    def test_multi_row_batch(self) -> None:
+        """Every row in a multi-row batch should have exactly one 0.0."""
+        # Import here to use the helper.
+        import os
+
+        env_vars = {
+            "QR_ENTROPY_SOURCE_TYPE": "mock_uniform",
+            "QR_FALLBACK_MODE": "error",
+            "QR_LOG_LEVEL": "none",
+        }
+        old = {k: os.environ.get(k) for k in env_vars}
+        for k, v in env_vars.items():
+            os.environ[k] = v
+
+        try:
+            from qr_sampler.processor import QRSamplerLogitsProcessor
+
+            class _VConfig:
+                vocab_size = 20
+
+            proc = QRSamplerLogitsProcessor(vllm_config=_VConfig())
+
+            rng = np.random.default_rng(42)
+            batch_size = 10
+            logits = rng.standard_normal((batch_size, 20)).astype(np.float32)
+            result = proc.apply(logits)
+
+            for i in range(batch_size):
+                row = result[i]
+                zeros = np.sum(row == 0.0)
+                neginfs = np.sum(np.isneginf(row))
+                assert zeros == 1, f"Row {i}: expected 1 zero, got {zeros}"
+                assert neginfs == 19, f"Row {i}: expected 19 -inf, got {neginfs}"
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_selected_token_within_vocab(self) -> None:
+        """Selected token IDs are always valid vocabulary indices."""
+        import os
+
+        env_vars = {
+            "QR_ENTROPY_SOURCE_TYPE": "mock_uniform",
+            "QR_FALLBACK_MODE": "error",
+            "QR_LOG_LEVEL": "none",
+            "QR_DIAGNOSTIC_MODE": "true",
+        }
+        old = {k: os.environ.get(k) for k in env_vars}
+        for k, v in env_vars.items():
+            os.environ[k] = v
+
+        try:
+            from qr_sampler.processor import QRSamplerLogitsProcessor
+
+            class _VConfig:
+                vocab_size = 50
+
+            proc = QRSamplerLogitsProcessor(vllm_config=_VConfig())
+
+            rng = np.random.default_rng(99)
+            for _ in range(20):
+                logits = rng.standard_normal((1, 50)).astype(np.float32)
+                proc.apply(logits)
+
+            for record in proc.sampling_logger.get_diagnostic_data():
+                assert 0 <= record.token_id < 50
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v

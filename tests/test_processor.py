@@ -1,50 +1,76 @@
-"""Integration tests for QuantumConsciousnessProcessor.
+"""Integration tests for QRSamplerLogitsProcessor.
 
-These tests exercise the full pipeline from logits through to token
-selection, using MockUniformSource so no real QRNG server is needed.
-The processor is tested with numpy arrays standing in for torch tensors,
-relying on the numpy fallback path in processor.apply().
+Tests the full sampling pipeline end-to-end using MockUniformSource
+for deterministic, reproducible results without any real QRNG or GPU.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import patch
 
 import numpy as np
 import pytest
 
-from qc_sampler.config import QCSamplingConfig
-from qc_sampler.entropy_source import MockUniformSource, OsUrandomSource
-from qc_sampler.exceptions import ConfigValidationError
-from qc_sampler.factory import (
-    build_signal_amplifier,
-    build_temperature_strategy,
-)
-from qc_sampler.processor import QuantumConsciousnessProcessor
-from qc_sampler.sampling_logger import SamplingLogger
-
+from qr_sampler.exceptions import ConfigValidationError
+from qr_sampler.processor import QRSamplerLogitsProcessor
 
 # ---------------------------------------------------------------------------
-# Helper stubs to simulate vLLM types without importing vLLM
+# Mock objects simulating vLLM's batch management types
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class FakeSamplingParams:
-    """Stand-in for vllm.SamplingParams in tests."""
+class MockVllmConfig:
+    """Simulates vLLM's VllmConfig with vocab_size access."""
+
+    vocab_size: int = 10
+
+
+@dataclass
+class MockModelConfig:
+    """Simulates vLLM's model config nested structure."""
+
+    hf_text_config: Any = None
+
+
+@dataclass
+class MockHfTextConfig:
+    """Simulates the HuggingFace text config with vocab_size."""
+
+    vocab_size: int = 10
+
+
+@dataclass
+class MockSamplingParams:
+    """Simulates vLLM's SamplingParams."""
 
     extra_args: dict[str, Any] | None = None
 
 
 @dataclass
-class FakeBatchUpdate:
-    """Stand-in for vllm.v1.sample.logits_processor.BatchUpdate."""
+class MockAddedRequest:
+    """Simulates a BatchUpdate added request."""
+
+    req_index: int
+    sampling_params: MockSamplingParams | None = None
+
+
+@dataclass
+class MockMovedRequest:
+    """Simulates a BatchUpdate moved request."""
+
+    src_index: int
+    dst_index: int
+
+
+@dataclass
+class MockBatchUpdate:
+    """Simulates vLLM's BatchUpdate dataclass."""
 
     removed: list[int] | None = None
-    moved: list[tuple[int, int, str]] | None = None
-    added: list[tuple[int, FakeSamplingParams, list[int]]] | None = None
+    moved: list[MockMovedRequest] | None = None
+    added: list[MockAddedRequest] | None = None
 
     def __post_init__(self) -> None:
         if self.removed is None:
@@ -56,434 +82,403 @@ class FakeBatchUpdate:
 
 
 # ---------------------------------------------------------------------------
-# Processor construction helpers
+# Helper to create a processor with MockUniformSource
 # ---------------------------------------------------------------------------
 
 
 def _make_processor(
-    vocab_size: int = 100,
-    config_overrides: dict[str, Any] | None = None,
-) -> QuantumConsciousnessProcessor:
-    """Build a processor with mocked entropy source for testing.
+    vocab_size: int = 10,
+    entropy_source_type: str = "mock_uniform",
+    fallback_mode: str = "error",
+    **config_overrides: Any,
+) -> QRSamplerLogitsProcessor:
+    """Create a processor using mock entropy (no gRPC, no GPU).
 
-    Uses os_urandom fallback mode so no gRPC connection is needed.
-    The fallback immediately kicks in because GrpcEntropySource will
-    fail to connect.
-
-    Args:
-        vocab_size: Simulated vocabulary size.
-        config_overrides: Env var overrides (QC_* keys).
-
-    Returns:
-        A configured QuantumConsciousnessProcessor.
+    Sets environment variables to configure, then instantiates.
     """
-    env = {
-        "QC_QRNG_FALLBACK_MODE": "os_urandom",
-        "QC_LOG_LEVEL": "none",
-        "QC_QRNG_PREFETCH_ENABLED": "false",
-    }
-    if config_overrides:
-        env.update(config_overrides)
+    import os
 
-    with patch.dict("os.environ", env, clear=False):
-        proc = QuantumConsciousnessProcessor()
-        proc._vocab_size = vocab_size
+    # Set env vars for config.
+    env_vars = {
+        "QR_ENTROPY_SOURCE_TYPE": entropy_source_type,
+        "QR_FALLBACK_MODE": fallback_mode,
+        "QR_LOG_LEVEL": "none",  # Quiet during tests.
+    }
+    for key, value in config_overrides.items():
+        env_vars[f"QR_{key.upper()}"] = str(value)
+
+    old_env: dict[str, str | None] = {}
+    for key, value in env_vars.items():
+        old_env[key] = os.environ.get(key)
+        os.environ[key] = value
+
+    try:
+        vllm_config = MockVllmConfig(vocab_size=vocab_size)
+        proc = QRSamplerLogitsProcessor(
+            vllm_config=vllm_config,
+            device=None,
+            is_pin_memory=False,
+        )
+    finally:
+        for key, original in old_env.items():
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+
     return proc
 
 
-def _make_logits(batch_size: int, vocab_size: int, seed: int = 42) -> np.ndarray:
-    """Generate a batch of random logits as a 2D numpy array.
-
-    In the real processor, this would be a torch.Tensor. The processor's
-    numpy fallback path handles plain numpy arrays identically.
-
-    Args:
-        batch_size: Number of rows (requests in the batch).
-        vocab_size: Number of columns (vocabulary size).
-        seed: RNG seed for reproducibility.
-
-    Returns:
-        A (batch_size, vocab_size) float64 array.
-    """
-    rng = np.random.default_rng(seed)
-    return rng.standard_normal((batch_size, vocab_size)).astype(np.float64)
-
-
 # ---------------------------------------------------------------------------
-# Tests: basic processor lifecycle
+# Tests
 # ---------------------------------------------------------------------------
 
 
 class TestProcessorInit:
-    """Test processor construction and configuration loading."""
+    """Test processor construction and component wiring."""
 
-    def test_init_with_defaults(self) -> None:
-        """Processor initializes with default config from env."""
+    def test_init_with_mock_source(self) -> None:
+        """Processor initializes successfully with mock entropy source."""
         proc = _make_processor()
-        assert proc._vocab_size == 100
-        assert proc._default_config.qrng_fallback_mode == "os_urandom"
+        assert proc._vocab_size == 10
+        assert proc.is_argmax_invariant() is False
 
-    def test_init_with_env_overrides(self) -> None:
-        """Processor picks up QC_* env vars."""
-        proc = _make_processor(config_overrides={
-            "QC_FIXED_TEMPERATURE": "0.9",
-            "QC_TOP_K": "100",
-        })
-        assert proc._default_config.fixed_temperature == 0.9
-        assert proc._default_config.top_k == 100
+    def test_init_with_none_vllm_config(self) -> None:
+        """When vllm_config is None, uses default vocab size."""
+        import os
 
+        os.environ["QR_ENTROPY_SOURCE_TYPE"] = "mock_uniform"
+        os.environ["QR_FALLBACK_MODE"] = "error"
+        os.environ["QR_LOG_LEVEL"] = "none"
+        try:
+            proc = QRSamplerLogitsProcessor(vllm_config=None)
+            assert proc._vocab_size == 32000  # _DEFAULT_VOCAB_SIZE
+        finally:
+            os.environ.pop("QR_ENTROPY_SOURCE_TYPE", None)
+            os.environ.pop("QR_FALLBACK_MODE", None)
+            os.environ.pop("QR_LOG_LEVEL", None)
 
-class TestValidateParams:
-    """Test the classmethod that validates SamplingParams.extra_args."""
+    def test_init_with_nested_vllm_config(self) -> None:
+        """Extracts vocab_size from nested vLLM config structure."""
+        hf = MockHfTextConfig(vocab_size=256)
+        model_cfg = MockModelConfig(hf_text_config=hf)
 
-    def test_valid_extra_args(self) -> None:
-        """Valid qc_* args pass validation."""
-        params = FakeSamplingParams(extra_args={
-            "qc_temperature_strategy": "fixed",
-            "qc_top_k": 50,
-        })
-        QuantumConsciousnessProcessor.validate_params(params)
+        @dataclass
+        class NestedConfig:
+            model_config: Any = None
 
-    def test_invalid_type_raises_value_error(self) -> None:
-        """Invalid type in extra_args raises ValueError."""
-        params = FakeSamplingParams(extra_args={
-            "qc_top_k": "not_a_number",
-        })
-        with pytest.raises(ValueError, match="top_k"):
-            QuantumConsciousnessProcessor.validate_params(params)
+        config = NestedConfig(model_config=model_cfg)
+        vocab = QRSamplerLogitsProcessor._extract_vocab_size(config)
+        assert vocab == 256
 
-    def test_non_overridable_field_raises_value_error(self) -> None:
-        """Infrastructure fields in extra_args raise ValueError."""
-        params = FakeSamplingParams(extra_args={
-            "qc_qrng_server_address": "other:50051",
-        })
-        with pytest.raises(ValueError, match="not overridable"):
-            QuantumConsciousnessProcessor.validate_params(params)
+    def test_extract_vocab_size_fallback(self) -> None:
+        """Falls back to default when config has no vocab_size."""
 
-    def test_no_extra_args_passes(self) -> None:
-        """Params with no extra_args are fine."""
-        params = FakeSamplingParams(extra_args=None)
-        QuantumConsciousnessProcessor.validate_params(params)
+        class EmptyConfig:
+            pass
 
-    def test_non_qc_args_ignored(self) -> None:
-        """Non-qc_* args are ignored (belong to other plugins)."""
-        params = FakeSamplingParams(extra_args={
-            "other_plugin_key": "value",
-        })
-        QuantumConsciousnessProcessor.validate_params(params)
+        vocab = QRSamplerLogitsProcessor._extract_vocab_size(EmptyConfig())
+        assert vocab == 32000
 
-
-class TestIsArgmaxInvariant:
-    """Test the is_argmax_invariant property."""
-
-    def test_returns_false(self) -> None:
-        """Processor must return False (it changes token selection)."""
+    def test_is_argmax_invariant(self) -> None:
+        """Processor must return False for is_argmax_invariant."""
         proc = _make_processor()
         assert proc.is_argmax_invariant() is False
 
 
-# ---------------------------------------------------------------------------
-# Tests: update_state
-# ---------------------------------------------------------------------------
+class TestValidateParams:
+    """Test validate_params() classmethod."""
+
+    def test_valid_extra_args(self) -> None:
+        """Valid qr_ keys pass validation."""
+        params = MockSamplingParams(extra_args={"qr_top_k": 100})
+        QRSamplerLogitsProcessor.validate_params(params)
+
+    def test_invalid_key_raises(self) -> None:
+        """Unknown qr_ key raises ConfigValidationError."""
+        params = MockSamplingParams(extra_args={"qr_nonexistent": 42})
+        with pytest.raises(ConfigValidationError):
+            QRSamplerLogitsProcessor.validate_params(params)
+
+    def test_non_overridable_field_raises(self) -> None:
+        """Infrastructure field raises ConfigValidationError."""
+        params = MockSamplingParams(extra_args={"qr_grpc_server_address": "foo"})
+        with pytest.raises(ConfigValidationError):
+            QRSamplerLogitsProcessor.validate_params(params)
+
+    def test_empty_extra_args(self) -> None:
+        """Empty extra_args passes validation."""
+        params = MockSamplingParams(extra_args={})
+        QRSamplerLogitsProcessor.validate_params(params)
+
+    def test_no_extra_args(self) -> None:
+        """Missing extra_args passes validation."""
+        params = MockSamplingParams(extra_args=None)
+        QRSamplerLogitsProcessor.validate_params(params)
+
+    def test_non_qr_keys_ignored(self) -> None:
+        """Keys without qr_ prefix are silently ignored."""
+        params = MockSamplingParams(extra_args={"other_key": "value"})
+        QRSamplerLogitsProcessor.validate_params(params)
 
 
 class TestUpdateState:
-    """Test batch update processing (add/remove/move requests)."""
+    """Test update_state() batch management."""
 
-    def test_add_request_stores_config(self) -> None:
-        """Adding a request stores its resolved config."""
+    def test_add_request(self) -> None:
+        """Adding a request creates per-request state."""
         proc = _make_processor()
-        params = FakeSamplingParams(extra_args={
-            "qc_top_k": 100,
-            "qc_fixed_temperature": 0.5,
-        })
-        update = FakeBatchUpdate(added=[(0, params, [])])
-        proc.update_state(update)
-
-        assert 0 in proc._request_configs
-        assert proc._request_configs[0].top_k == 100
-        assert proc._request_configs[0].fixed_temperature == 0.5
-
-    def test_remove_request_clears_config(self) -> None:
-        """Removing a request clears its cached state."""
-        proc = _make_processor()
-        # First add
-        params = FakeSamplingParams(extra_args={"qc_top_k": 100})
-        proc.update_state(FakeBatchUpdate(added=[(0, params, [])]))
-        assert 0 in proc._request_configs
-
-        # Then remove
-        proc.update_state(FakeBatchUpdate(removed=[0]))
-        assert 0 not in proc._request_configs
-
-    def test_move_request_updates_index(self) -> None:
-        """Moving a request transfers its config to the new index."""
-        proc = _make_processor()
-        params = FakeSamplingParams(extra_args={"qc_top_k": 77})
-        proc.update_state(FakeBatchUpdate(added=[(0, params, [])]))
-
-        proc.update_state(FakeBatchUpdate(moved=[(0, 5, "forward")]))
-        assert 0 not in proc._request_configs
-        assert 5 in proc._request_configs
-        assert proc._request_configs[5].top_k == 77
-
-    def test_add_with_different_strategy_caches_component(self) -> None:
-        """Adding a request with a different strategy caches it."""
-        proc = _make_processor()
-        # Default is "fixed"; add a request with "edt"
-        params = FakeSamplingParams(extra_args={
-            "qc_temperature_strategy": "edt",
-        })
-        proc.update_state(FakeBatchUpdate(added=[(0, params, [])]))
-        assert 0 in proc._request_temp_strategies
-
-    def test_add_with_same_strategy_no_cache(self) -> None:
-        """Adding a request with the default strategy doesn't cache it."""
-        proc = _make_processor()
-        params = FakeSamplingParams(extra_args={
-            "qc_top_k": 100,
-        })
-        proc.update_state(FakeBatchUpdate(added=[(0, params, [])]))
-        assert 0 not in proc._request_temp_strategies
-        assert 0 not in proc._request_amplifiers
-
-    def test_none_batch_update_is_noop(self) -> None:
-        """Passing None does nothing."""
-        proc = _make_processor()
-        proc.update_state(None)
-        assert len(proc._request_configs) == 0
-
-
-# ---------------------------------------------------------------------------
-# Tests: apply (full pipeline integration)
-# ---------------------------------------------------------------------------
-
-
-class TestApply:
-    """Integration tests for the apply() method (full sampling pipeline)."""
-
-    def test_single_row_produces_one_hot_logits(self) -> None:
-        """After apply(), each row has exactly one 0.0 and rest -inf."""
-        proc = _make_processor(vocab_size=100)
-        logits = _make_logits(batch_size=1, vocab_size=100)
-        result = proc.apply(logits)
-
-        row = result[0]
-        finite_mask = np.isfinite(row)
-        assert np.sum(finite_mask) == 1, (
-            f"Expected exactly 1 finite value, got {np.sum(finite_mask)}"
+        batch = MockBatchUpdate(
+            added=[MockAddedRequest(req_index=0, sampling_params=MockSamplingParams())]
         )
-        assert row[finite_mask][0] == 0.0
+        proc.update_state(batch)
+        assert 0 in proc._request_states
 
-    def test_batch_produces_one_hot_per_row(self) -> None:
-        """Each row in a batch gets exactly one finite value."""
-        proc = _make_processor(vocab_size=100)
-        logits = _make_logits(batch_size=4, vocab_size=100)
-        result = proc.apply(logits)
+    def test_add_request_with_overrides(self) -> None:
+        """Added request with extra_args gets resolved config."""
+        proc = _make_processor()
+        params = MockSamplingParams(extra_args={"qr_top_k": 100})
+        batch = MockBatchUpdate(added=[MockAddedRequest(req_index=0, sampling_params=params)])
+        proc.update_state(batch)
+        assert proc._request_states[0].config.top_k == 100
 
-        for i in range(4):
-            finite_mask = np.isfinite(result[i])
-            assert np.sum(finite_mask) == 1, (
-                f"Row {i}: expected 1 finite value, got {np.sum(finite_mask)}"
+    def test_remove_request(self) -> None:
+        """Removing a request cleans up per-request state."""
+        proc = _make_processor()
+        # Add then remove.
+        proc.update_state(
+            MockBatchUpdate(
+                added=[MockAddedRequest(req_index=0, sampling_params=MockSamplingParams())]
             )
-
-    def test_selected_token_is_valid_index(self) -> None:
-        """The selected token index is within [0, vocab_size)."""
-        vocab_size = 100
-        proc = _make_processor(vocab_size=vocab_size)
-        logits = _make_logits(batch_size=1, vocab_size=vocab_size)
-        result = proc.apply(logits)
-
-        row = result[0]
-        selected_idx = int(np.where(np.isfinite(row))[0][0])
-        assert 0 <= selected_idx < vocab_size
-
-    def test_per_request_config_applies(self) -> None:
-        """Per-request config via update_state affects token selection."""
-        proc = _make_processor(vocab_size=100)
-        # Add a request with very restrictive top-k
-        params = FakeSamplingParams(extra_args={"qc_top_k": 1})
-        proc.update_state(FakeBatchUpdate(added=[(0, params, [])]))
-
-        logits = _make_logits(batch_size=1, vocab_size=100)
-        result = proc.apply(logits)
-
-        # With top_k=1, should always select the single most probable token
-        row = result[0]
-        selected_idx = int(np.where(np.isfinite(row))[0][0])
-        assert 0 <= selected_idx < 100
-
-    def test_diagnostic_mode_records(self) -> None:
-        """With diagnostic_mode on, the logger stores records."""
-        proc = _make_processor(
-            vocab_size=100,
-            config_overrides={
-                "QC_DIAGNOSTIC_MODE": "true",
-                "QC_LOG_LEVEL": "none",
-                "QC_QRNG_FALLBACK_MODE": "os_urandom",
-                "QC_QRNG_PREFETCH_ENABLED": "false",
-            },
         )
-        logits = _make_logits(batch_size=3, vocab_size=100)
+        assert 0 in proc._request_states
+        proc.update_state(MockBatchUpdate(removed=[0]))
+        assert 0 not in proc._request_states
+
+    def test_move_request(self) -> None:
+        """Moving a request updates state index."""
+        proc = _make_processor()
+        proc.update_state(
+            MockBatchUpdate(
+                added=[MockAddedRequest(req_index=0, sampling_params=MockSamplingParams())]
+            )
+        )
+        proc.update_state(MockBatchUpdate(moved=[MockMovedRequest(src_index=0, dst_index=5)]))
+        assert 0 not in proc._request_states
+        assert 5 in proc._request_states
+
+    def test_none_batch_update(self) -> None:
+        """None batch_update is a no-op."""
+        proc = _make_processor()
+        proc.update_state(None)  # Should not raise.
+
+    def test_removal_then_add_in_same_update(self) -> None:
+        """Process removal before addition in the same batch update."""
+        proc = _make_processor()
+        proc.update_state(
+            MockBatchUpdate(
+                added=[MockAddedRequest(req_index=0, sampling_params=MockSamplingParams())]
+            )
+        )
+        # Remove 0 and add 0 back in same update.
+        proc.update_state(
+            MockBatchUpdate(
+                removed=[0],
+                added=[
+                    MockAddedRequest(
+                        req_index=0,
+                        sampling_params=MockSamplingParams(extra_args={"qr_top_k": 200}),
+                    )
+                ],
+            )
+        )
+        assert proc._request_states[0].config.top_k == 200
+
+
+class TestApplyPipeline:
+    """Test the full apply() pipeline with numpy arrays."""
+
+    def test_single_row_onehot(self) -> None:
+        """apply() produces one-hot output for a single-row batch."""
+        proc = _make_processor()
+        logits = np.array([[5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0]])
+        result = proc.apply(logits)
+
+        # Exactly one 0.0 value, rest are -inf.
+        assert result is logits  # In-place modification.
+        row = result[0]
+        assert np.sum(row == 0.0) == 1
+        assert np.sum(np.isneginf(row)) == 9
+
+    def test_batch_processing(self) -> None:
+        """apply() processes all rows in a batch."""
+        proc = _make_processor()
+        logits = np.array(
+            [
+                [5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [-1.0, -1.0, -1.0, -1.0, 10.0, -1.0, -1.0, -1.0, -1.0, -1.0],
+            ]
+        )
+        result = proc.apply(logits)
+
+        for i in range(3):
+            row = result[i]
+            assert np.sum(row == 0.0) == 1, f"Row {i} should have exactly one 0.0"
+            assert np.sum(np.isneginf(row)) == 9, f"Row {i} should have 9 -inf values"
+
+    def test_dominant_token_selection(self) -> None:
+        """A very dominant logit is likely selected (u near 0 → most probable)."""
+        proc = _make_processor()
+        # Token 4 has overwhelmingly high logit.
+        logits = np.array(
+            [
+                [
+                    -100.0,
+                    -100.0,
+                    -100.0,
+                    -100.0,
+                    100.0,
+                    -100.0,
+                    -100.0,
+                    -100.0,
+                    -100.0,
+                    -100.0,
+                ]
+            ]
+        )
+        result = proc.apply(logits)
+        # Token 4 should be selected regardless of u value.
+        assert result[0, 4] == 0.0
+
+    def test_1d_logits(self) -> None:
+        """apply() handles 1-D logits (single request, no batch dim)."""
+        proc = _make_processor()
+        logits = np.array([5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0])
+        result = proc.apply(logits)
+        assert np.sum(result == 0.0) == 1
+        assert np.sum(np.isneginf(result)) == 9
+
+    def test_empty_batch(self) -> None:
+        """apply() short-circuits on empty batch."""
+        proc = _make_processor()
+        logits = np.empty((0, 10))
+        result = proc.apply(logits)
+        assert result.shape == (0, 10)
+
+    def test_per_request_config_in_apply(self) -> None:
+        """Per-request config affects token selection parameters."""
+        proc = _make_processor()
+
+        # Add a request with top_k=1 (greedy-like: only top token survives).
+        params = MockSamplingParams(extra_args={"qr_top_k": 1})
+        proc.update_state(
+            MockBatchUpdate(added=[MockAddedRequest(req_index=0, sampling_params=params)])
+        )
+
+        logits = np.array([[5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0]])
+        result = proc.apply(logits)
+        # With top_k=1, only the highest logit (index 0) should be selected.
+        assert result[0, 0] == 0.0
+
+    def test_inplace_modification(self) -> None:
+        """apply() modifies the logits array in-place and returns it."""
+        proc = _make_processor()
+        logits = np.array([[5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0]])
+        result = proc.apply(logits)
+        assert result is logits
+
+    def test_dominant_token_always_selected(self) -> None:
+        """When one logit overwhelmingly dominates, it is selected regardless of u."""
+        # Run multiple times with different random entropy to confirm the
+        # dominant token is always picked. This verifies the full pipeline:
+        # temperature -> softmax -> CDF -> select -> one-hot.
+        for _ in range(5):
+            proc = _make_processor()
+            logits = np.array(
+                [[-100.0, -100.0, -100.0, 100.0, -100.0, -100.0, -100.0, -100.0, -100.0, -100.0]]
+            )
+            proc.apply(logits)
+            # Token 3 is the only viable candidate after softmax.
+            assert logits[0, 3] == 0.0
+
+
+class TestDiagnosticLogging:
+    """Test that the processor produces valid diagnostic records."""
+
+    def test_diagnostic_records_stored(self) -> None:
+        """With diagnostic_mode=True, records are stored."""
+        proc = _make_processor(diagnostic_mode=True)
+        logits = np.array([[5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0]])
         proc.apply(logits)
 
-        records = proc._logger.get_diagnostic_data()
-        assert len(records) == 3
-        for rec in records:
-            assert 0 <= rec.token_id < 100
-            assert rec.u_value > 0.0
-            assert rec.u_value < 1.0
-            assert rec.total_sampling_ms > 0.0
+        records = proc.sampling_logger.get_diagnostic_data()
+        assert len(records) == 1
 
-    def test_multiple_apply_calls(self) -> None:
-        """Multiple apply() calls don't corrupt state."""
-        proc = _make_processor(vocab_size=50)
-        for _ in range(5):
-            logits = _make_logits(batch_size=2, vocab_size=50, seed=None)
-            result = proc.apply(logits)
-            for i in range(2):
-                assert np.sum(np.isfinite(result[i])) == 1
+        record = records[0]
+        assert record.token_id >= 0
+        assert record.token_id < 10
+        assert 0.0 < record.u_value < 1.0
+        assert record.token_rank >= 0
+        assert record.token_prob > 0.0
+        assert record.num_candidates > 0
+        assert record.entropy_fetch_ms >= 0.0
+        assert record.total_sampling_ms > 0.0
+        assert len(record.config_hash) == 16
+        assert record.temperature_used > 0.0
 
-
-# ---------------------------------------------------------------------------
-# Tests: factory integration
-# ---------------------------------------------------------------------------
-
-
-class TestFactoryIntegration:
-    """Test that factory functions correctly build components."""
-
-    def test_build_signal_amplifier_zscore(self, default_config: QCSamplingConfig) -> None:
-        """Factory builds ZScoreMeanAmplifier from default config."""
-        amp = build_signal_amplifier(default_config)
-        from qc_sampler.signal_amplifier import ZScoreMeanAmplifier
-        assert isinstance(amp, ZScoreMeanAmplifier)
-
-    def test_build_temperature_fixed(self, default_config: QCSamplingConfig) -> None:
-        """Factory builds FixedTemperatureStrategy from default config."""
-        strat = build_temperature_strategy(default_config, vocab_size=100)
-        from qc_sampler.temperature_strategy import FixedTemperatureStrategy
-        assert isinstance(strat, FixedTemperatureStrategy)
-
-    def test_build_temperature_edt(self, edt_config: QCSamplingConfig) -> None:
-        """Factory builds EDTTemperatureStrategy when config says 'edt'."""
-        strat = build_temperature_strategy(edt_config, vocab_size=100)
-        from qc_sampler.temperature_strategy import EDTTemperatureStrategy
-        assert isinstance(strat, EDTTemperatureStrategy)
-
-    def test_unknown_amplifier_type_raises(self) -> None:
-        """Unknown signal_amplifier_type raises ConfigValidationError."""
-        config = QCSamplingConfig(signal_amplifier_type="nonexistent")
-        with pytest.raises(ConfigValidationError, match="nonexistent"):
-            build_signal_amplifier(config)
-
-    def test_unknown_temperature_strategy_raises(self) -> None:
-        """Unknown temperature_strategy raises ConfigValidationError."""
-        config = QCSamplingConfig(temperature_strategy="nonexistent")
-        with pytest.raises(ConfigValidationError, match="nonexistent"):
-            build_temperature_strategy(config, vocab_size=100)
-
-
-# ---------------------------------------------------------------------------
-# Tests: SamplingLogger
-# ---------------------------------------------------------------------------
-
-
-class TestSamplingLogger:
-    """Test the SamplingLogger component."""
-
-    def test_empty_summary_stats(self) -> None:
-        """get_summary_stats returns empty dict when no records exist."""
-        config = QCSamplingConfig(log_level="none", diagnostic_mode=False)
-        log = SamplingLogger(config)
-        assert log.get_summary_stats() == {}
-
-    def test_diagnostic_mode_stores_records(self) -> None:
-        """Records are stored when diagnostic_mode is True."""
-        from qc_sampler.sampling_logger import TokenSamplingRecord
-        config = QCSamplingConfig(log_level="none", diagnostic_mode=True)
-        log = SamplingLogger(config)
-
-        record = TokenSamplingRecord(
-            timestamp_ns=1000,
-            qrng_fetch_ms=1.0,
-            total_sampling_ms=2.0,
-            qrng_source_used="mock",
-            sample_mean=127.5,
-            z_score=0.0,
-            u_value=0.5,
-            temperature_strategy="fixed",
-            shannon_entropy=3.0,
-            temperature_used=0.7,
-            token_id=42,
-            token_rank=0,
-            token_prob=0.1,
-            num_candidates=50,
-            config_hash="abc123",
+    def test_batch_diagnostic_records(self) -> None:
+        """Each row in a batch produces one diagnostic record."""
+        proc = _make_processor(diagnostic_mode=True)
+        logits = np.array(
+            [
+                [5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ]
         )
-        log.log_token(record)
-        data = log.get_diagnostic_data()
-        assert len(data) == 1
-        assert data[0].token_id == 42
+        proc.apply(logits)
 
-    def test_no_diagnostic_mode_no_records(self) -> None:
-        """Records are NOT stored when diagnostic_mode is False."""
-        from qc_sampler.sampling_logger import TokenSamplingRecord
-        config = QCSamplingConfig(log_level="summary", diagnostic_mode=False)
-        log = SamplingLogger(config)
+        records = proc.sampling_logger.get_diagnostic_data()
+        assert len(records) == 2
 
-        record = TokenSamplingRecord(
-            timestamp_ns=1000,
-            qrng_fetch_ms=1.0,
-            total_sampling_ms=2.0,
-            qrng_source_used="mock",
-            sample_mean=127.5,
-            z_score=0.0,
-            u_value=0.5,
-            temperature_strategy="fixed",
-            shannon_entropy=3.0,
-            temperature_used=0.7,
-            token_id=42,
-            token_rank=0,
-            token_prob=0.1,
-            num_candidates=50,
-            config_hash="abc123",
+    def test_entropy_source_tracking(self) -> None:
+        """Diagnostic records track which entropy source was used."""
+        proc = _make_processor(diagnostic_mode=True)
+        logits = np.array([[5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0]])
+        proc.apply(logits)
+
+        record = proc.sampling_logger.get_diagnostic_data()[0]
+        assert record.entropy_source_used == "mock_uniform"
+        assert record.entropy_is_fallback is False
+
+
+class TestFallbackIntegration:
+    """Test fallback entropy source integration."""
+
+    def test_system_fallback(self) -> None:
+        """With system fallback, processor works even if primary is unavailable."""
+        proc = _make_processor(
+            entropy_source_type="mock_uniform",
+            fallback_mode="system",
         )
-        log.log_token(record)
-        assert log.get_diagnostic_data() == []
+        # FallbackEntropySource wraps mock + system.
+        assert "+" in proc.entropy_source.name
 
-    def test_summary_stats_computed(self) -> None:
-        """get_summary_stats returns averages over stored records."""
-        from qc_sampler.sampling_logger import TokenSamplingRecord
-        config = QCSamplingConfig(log_level="none", diagnostic_mode=True)
-        log = SamplingLogger(config)
+        logits = np.array([[5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0]])
+        result = proc.apply(logits)
+        assert np.sum(result[0] == 0.0) == 1
 
-        for i in range(10):
-            log.log_token(TokenSamplingRecord(
-                timestamp_ns=i * 1000,
-                qrng_fetch_ms=float(i),
-                total_sampling_ms=float(i * 2),
-                qrng_source_used="mock",
-                sample_mean=127.5,
-                z_score=0.0,
-                u_value=0.5,
-                temperature_strategy="fixed",
-                shannon_entropy=3.0,
-                temperature_used=0.7,
-                token_id=i,
-                token_rank=i,
-                token_prob=0.1,
-                num_candidates=50,
-                config_hash="abc",
-            ))
 
-        stats = log.get_summary_stats()
-        assert stats["count"] == 10
-        assert stats["avg_temperature"] == 0.7
-        assert stats["avg_u_value"] == 0.5
+class TestProcessorClose:
+    """Test processor resource cleanup."""
 
-    def test_invalid_log_level_raises(self) -> None:
-        """Invalid log_level raises ValueError at construction."""
-        config = QCSamplingConfig(log_level="invalid")
-        with pytest.raises(ValueError, match="invalid"):
-            SamplingLogger(config)
+    def test_close(self) -> None:
+        """close() releases entropy source resources."""
+        proc = _make_processor()
+        proc.close()  # Should not raise.
+
+    def test_close_idempotent(self) -> None:
+        """close() can be called multiple times safely."""
+        proc = _make_processor()
+        proc.close()
+        proc.close()  # Should not raise.
