@@ -22,18 +22,17 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 readme = "README.md"
+dependencies = [
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/qr-sampler/qr-sampler"
 Repository = "https://github.com/qr-sampler/qr-sampler"
 Issues = "https://github.com/qr-sampler/qr-sampler/issues"
 Changelog = "https://github.com/qr-sampler/qr-sampler/blob/main/CHANGELOG.md"
-
-dependencies = [
-    "numpy>=1.24.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-]
 
 [project.optional-dependencies]
 grpc = [
