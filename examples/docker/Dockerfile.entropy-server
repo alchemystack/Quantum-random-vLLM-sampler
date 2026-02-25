@@ -41,12 +41,6 @@ ENV ENTROPY_SERVER=simple_urandom_server.py
 # The default gRPC port.
 EXPOSE 50051
 
-# Health check: attempt a gRPC connectivity check.
-# Falls back to checking if the process is alive.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import grpc; ch = grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(ch).result(timeout=3)" \
-    || exit 1
-
 # Run the selected server script. The entrypoint allows passing
 # additional arguments (e.g., --port, --verbose).
 ENTRYPOINT ["sh", "-c", "python /app/servers/${ENTROPY_SERVER} \"$@\"", "--"]

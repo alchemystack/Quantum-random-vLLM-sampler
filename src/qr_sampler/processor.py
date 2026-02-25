@@ -74,8 +74,8 @@ def _accepts_config(cls: type) -> bool:
         return False
 
     params = list(sig.parameters.values())
-    # Skip 'self'.
-    for param in params[1:]:
+    # inspect.signature(cls) already strips 'self' for classes.
+    for param in params:
         annotation = param.annotation
         if annotation is inspect.Parameter.empty:
             if param.name == "config":
