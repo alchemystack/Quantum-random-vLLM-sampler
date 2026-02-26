@@ -97,6 +97,10 @@ mypy_path = "src"
 module = ["grpc", "grpc.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 source = ["src/qr_sampler"]
 omit = [

@@ -155,9 +155,7 @@ class TestQuantumGrpcSourceUnary:
             mock_channel_fn.return_value = mock_channel
 
             # Mock channel.unary_unary() -> returns a callable (method handle).
-            mock_unary_handle = AsyncMock(
-                return_value=_encode_mock_response(b"\x42" * 100)
-            )
+            mock_unary_handle = AsyncMock(return_value=_encode_mock_response(b"\x42" * 100))
             mock_channel.unary_unary = MagicMock(return_value=mock_unary_handle)
 
             # Mock channel.stream_stream() -> not used in unary mode but still called.
@@ -481,9 +479,7 @@ class TestQuantumGrpcSourceServerStreaming:
             # Mock channel.stream_stream() -> returns a callable that produces
             # a stream call object with .read() and .cancel().
             mock_stream_call = AsyncMock()
-            mock_stream_call.read = AsyncMock(
-                return_value=_encode_mock_response(b"\x55" * 50)
-            )
+            mock_stream_call.read = AsyncMock(return_value=_encode_mock_response(b"\x55" * 50))
             mock_stream_call.cancel = MagicMock()
             mock_stream_handle = MagicMock(return_value=mock_stream_call)
             mock_channel.stream_stream = MagicMock(return_value=mock_stream_handle)
@@ -558,9 +554,7 @@ class TestQuantumGrpcSourceBidiStreaming:
             # a bidi call object with .write() and .read().
             mock_bidi_call = AsyncMock()
             mock_bidi_call.write = AsyncMock()
-            mock_bidi_call.read = AsyncMock(
-                return_value=_encode_mock_response(b"\xcc" * 64)
-            )
+            mock_bidi_call.read = AsyncMock(return_value=_encode_mock_response(b"\xcc" * 64))
             mock_stream_handle = MagicMock(return_value=mock_bidi_call)
             mock_channel.stream_stream = MagicMock(return_value=mock_stream_handle)
 
@@ -642,9 +636,7 @@ class TestApiKeyMetadataInjection:
             mock_channel = MagicMock()
             mock_channel_fn.return_value = mock_channel
 
-            mock_unary_handle = AsyncMock(
-                return_value=_encode_mock_response(b"\x01" * 10)
-            )
+            mock_unary_handle = AsyncMock(return_value=_encode_mock_response(b"\x01" * 10))
             mock_channel.unary_unary = MagicMock(return_value=mock_unary_handle)
             mock_channel.stream_stream = MagicMock(return_value=MagicMock())
 
@@ -657,9 +649,7 @@ class TestApiKeyMetadataInjection:
                 # Verify the unary method handle was called with metadata.
                 mock_unary_handle.assert_called_once()
                 call_kwargs = mock_unary_handle.call_args
-                metadata = call_kwargs.kwargs.get("metadata") or call_kwargs[1].get(
-                    "metadata"
-                )
+                metadata = call_kwargs.kwargs.get("metadata") or call_kwargs[1].get("metadata")
                 assert metadata is not None
                 assert ("x-api-key", "test-secret-key") in metadata
             finally:
@@ -678,9 +668,7 @@ class TestApiKeyMetadataInjection:
             mock_channel = MagicMock()
             mock_channel_fn.return_value = mock_channel
 
-            mock_unary_handle = AsyncMock(
-                return_value=_encode_mock_response(b"\x01" * 10)
-            )
+            mock_unary_handle = AsyncMock(return_value=_encode_mock_response(b"\x01" * 10))
             mock_channel.unary_unary = MagicMock(return_value=mock_unary_handle)
             mock_channel.stream_stream = MagicMock(return_value=MagicMock())
 
@@ -692,9 +680,7 @@ class TestApiKeyMetadataInjection:
 
                 mock_unary_handle.assert_called_once()
                 call_kwargs = mock_unary_handle.call_args
-                metadata = call_kwargs.kwargs.get("metadata") or call_kwargs[1].get(
-                    "metadata"
-                )
+                metadata = call_kwargs.kwargs.get("metadata") or call_kwargs[1].get("metadata")
                 assert metadata is None
             finally:
                 source.close()

@@ -143,9 +143,7 @@ def _decode_bytes_field1(data: bytes) -> bytes:
             offset += 8  # 64-bit fixed
         else:
             break
-    raise EntropyUnavailableError(
-        "Failed to decode gRPC response: field 1 (bytes) not found"
-    )
+    raise EntropyUnavailableError("Failed to decode gRPC response: field 1 (bytes) not found")
 
 
 def _generic_request_serializer(request: bytes) -> bytes:
@@ -391,7 +389,9 @@ class QuantumGrpcSource(EntropySource):
         request_bytes = _encode_varint_request(n)
         timeout_s = self._get_timeout() / 1000.0
         raw_response: bytes = await self._unary_method(
-            request_bytes, timeout=timeout_s, metadata=self._metadata or None,
+            request_bytes,
+            timeout=timeout_s,
+            metadata=self._metadata or None,
         )
         return _decode_bytes_field1(raw_response)
 
@@ -406,7 +406,8 @@ class QuantumGrpcSource(EntropySource):
         async def request_iterator() -> Any:
             yield request_bytes
 
-        assert self._stream_method is not None  # validated in __init__
+        if self._stream_method is None:  # pragma: no cover — validated in __init__
+            raise EntropyUnavailableError("Stream method not initialized")
         call = self._stream_method(request_iterator(), metadata=self._metadata or None)
         raw_response: bytes | None = await call.read()
         if raw_response is None:
@@ -424,7 +425,8 @@ class QuantumGrpcSource(EntropySource):
 
         try:
             if self._bidi_call is None:
-                assert self._stream_method is not None  # validated in __init__
+                if self._stream_method is None:  # pragma: no cover — validated in __init__
+                    raise EntropyUnavailableError("Stream method not initialized")
                 self._bidi_call = self._stream_method(
                     metadata=self._metadata or None,
                 )
