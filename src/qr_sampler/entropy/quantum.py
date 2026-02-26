@@ -1,17 +1,24 @@
-"""Quantum gRPC entropy source with configurable transport modes.
+"""Protocol-agnostic gRPC entropy source with configurable transport modes.
 
 This is the primary production entropy source. It fetches random bytes from
-a remote QRNG server over gRPC, supporting three transport modes:
+a remote entropy server over gRPC, supporting three transport modes:
 
-- **Unary**: simple request-response (``GetEntropy``). One HTTP/2 stream per call.
+- **Unary**: simple request-response. One HTTP/2 stream per call.
 - **Server streaming**: client sends one config request, server streams responses.
 - **Bidirectional streaming**: persistent stream with lowest latency.
+
+The source is **protocol-agnostic**: it uses configurable gRPC method paths
+and generic protobuf wire-format helpers rather than hard-coded stubs. This
+allows it to connect to any gRPC entropy server (e.g. ``qr_entropy.EntropyService``,
+``qrng.QuantumRNG``, or any custom proto) as long as the request encodes the
+byte count as protobuf field 1 (varint) and the response returns data as
+protobuf field 1 (length-delimited bytes).
 
 All modes satisfy the just-in-time constraint: the gRPC request is sent
 only when ``get_random_bytes()`` is called (i.e., after logits are available).
 
 Includes an adaptive circuit breaker that tracks rolling P99 latency and
-falls back to a secondary source when the QRNG is slow or unreachable.
+falls back to a secondary source when the server is slow or unreachable.
 """
 
 from __future__ import annotations
@@ -25,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from qr_sampler.entropy.base import EntropySource
 from qr_sampler.entropy.registry import register_entropy_source
-from qr_sampler.exceptions import EntropyUnavailableError
+from qr_sampler.exceptions import ConfigValidationError, EntropyUnavailableError
 
 if TYPE_CHECKING:
     from qr_sampler.config import QRSamplerConfig
@@ -33,17 +40,154 @@ if TYPE_CHECKING:
 logger = logging.getLogger("qr_sampler")
 
 
+# ---------------------------------------------------------------------------
+# Generic protobuf wire-format helpers
+# ---------------------------------------------------------------------------
+
+
+def _encode_varint(value: int) -> bytes:
+    """Encode an unsigned integer as a protobuf varint (LEB128).
+
+    Args:
+        value: Non-negative integer to encode.
+
+    Returns:
+        LEB128-encoded bytes.
+    """
+    parts: list[int] = []
+    while value > 0x7F:
+        parts.append((value & 0x7F) | 0x80)
+        value >>= 7
+    parts.append(value & 0x7F)
+    return bytes(parts)
+
+
+def _decode_varint(data: bytes, offset: int) -> tuple[int, int]:
+    """Decode a varint from bytes at the given offset.
+
+    Args:
+        data: Raw bytes.
+        offset: Starting position.
+
+    Returns:
+        Tuple of (decoded_value, new_offset).
+    """
+    result = 0
+    shift = 0
+    while True:
+        b = data[offset]
+        result |= (b & 0x7F) << shift
+        offset += 1
+        if not (b & 0x80):
+            break
+        shift += 7
+    return result, offset
+
+
+def _encode_varint_request(n: int) -> bytes:
+    """Encode a generic protobuf request with field 1 = varint *n*.
+
+    This produces valid protobuf wire bytes for any message where the
+    byte count is field 1 (varint), e.g. both ``EntropyRequest(bytes_needed=n)``
+    and ``RandomRequest(num_bytes=n)``.
+
+    Args:
+        n: Number of bytes to request (encoded as field 1, wire type 0).
+
+    Returns:
+        Serialized protobuf bytes.
+    """
+    if n == 0:
+        return b""
+    # Tag: field 1, wire type 0 (varint) = (1 << 3) | 0 = 0x08
+    return b"\x08" + _encode_varint(n)
+
+
+def _decode_bytes_field1(data: bytes) -> bytes:
+    """Extract field 1 (length-delimited bytes) from a protobuf message.
+
+    Scans protobuf wire-format bytes for the first occurrence of field 1
+    with wire type 2 (length-delimited) and returns its raw bytes payload.
+    All other fields are skipped. This works for any response proto where
+    field 1 is the data payload (e.g. ``EntropyResponse.data``,
+    ``RandomResponse.data``).
+
+    Args:
+        data: Raw protobuf wire-format bytes.
+
+    Returns:
+        The bytes payload from field 1.
+
+    Raises:
+        EntropyUnavailableError: If field 1 is not found or the wire
+            format is invalid.
+    """
+    offset = 0
+    while offset < len(data):
+        tag, offset = _decode_varint(data, offset)
+        field_number = tag >> 3
+        wire_type = tag & 0x07
+        if wire_type == 0:
+            # Varint — consume and skip.
+            _, offset = _decode_varint(data, offset)
+        elif wire_type == 2:
+            # Length-delimited.
+            length, offset = _decode_varint(data, offset)
+            payload = data[offset : offset + length]
+            offset += length
+            if field_number == 1:
+                return payload
+        elif wire_type == 5:
+            offset += 4  # 32-bit fixed
+        elif wire_type == 1:
+            offset += 8  # 64-bit fixed
+        else:
+            break
+    raise EntropyUnavailableError(
+        "Failed to decode gRPC response: field 1 (bytes) not found"
+    )
+
+
+def _generic_request_serializer(request: bytes) -> bytes:
+    """Pass-through serializer for pre-encoded request bytes.
+
+    The generic client encodes the request as raw protobuf bytes before
+    calling the gRPC method handle, so the serializer is an identity function.
+    """
+    return request
+
+
+def _generic_response_deserializer(data: bytes) -> bytes:
+    """Pass-through deserializer that returns raw response bytes.
+
+    The caller extracts field 1 via ``_decode_bytes_field1()`` after
+    receiving the raw wire-format bytes.
+    """
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Source implementation
+# ---------------------------------------------------------------------------
+
+
 @register_entropy_source("quantum_grpc")
 class QuantumGrpcSource(EntropySource):
-    """gRPC entropy source with configurable transport mode.
+    """Protocol-agnostic gRPC entropy source with configurable transport mode.
 
-    All modes satisfy the just-in-time constraint: the gRPC request
-    is only sent when ``get_random_bytes()`` is called (i.e., after logits
-    are available). The transport mode affects connection management
-    overhead, not entropy freshness.
+    Connects to any gRPC entropy server using configurable method paths and
+    generic protobuf wire-format encoding. All modes satisfy the just-in-time
+    constraint: the gRPC request is only sent when ``get_random_bytes()`` is
+    called (i.e., after logits are available). The transport mode affects
+    connection management overhead, not entropy freshness.
 
     Args:
         config: Sampler configuration with gRPC settings.
+
+    Raises:
+        ImportError: If ``grpcio`` is not installed.
+        ConfigValidationError: If streaming mode is requested but
+            ``grpc_stream_method_path`` is empty.
     """
 
     def __init__(self, config: QRSamplerConfig) -> None:
@@ -59,8 +203,22 @@ class QuantumGrpcSource(EntropySource):
         self._timeout_ms = config.grpc_timeout_ms
         self._retry_count = config.grpc_retry_count
         self._mode = config.grpc_mode
-        self._sequence_id = 0
+        self._method_path = config.grpc_method_path
+        self._stream_method_path = config.grpc_stream_method_path
+        self._api_key = config.grpc_api_key
+        self._api_key_header = config.grpc_api_key_header
         self._closed = False
+
+        # Validate streaming config upfront.
+        if self._mode in ("server_streaming", "bidi_streaming") and not self._stream_method_path:
+            raise ConfigValidationError(
+                f"grpc_mode={self._mode!r} requires a non-empty grpc_stream_method_path"
+            )
+
+        # Build call metadata (empty tuple if no auth).
+        self._metadata: tuple[tuple[str, str], ...] = ()
+        if self._api_key:
+            self._metadata = ((self._api_key_header, self._api_key),)
 
         # Circuit breaker config.
         self._cb_min_timeout_ms = config.cb_min_timeout_ms
@@ -84,7 +242,7 @@ class QuantumGrpcSource(EntropySource):
         )
         self._thread.start()
 
-        # Initialize channel and stub on the background loop.
+        # Initialize channel and method handles on the background loop.
         future = asyncio.run_coroutine_threadsafe(self._init_channel(), self._loop)
         future.result(timeout=self._timeout_ms / 1000.0)
 
@@ -97,7 +255,7 @@ class QuantumGrpcSource(EntropySource):
         self._loop.run_forever()
 
     async def _init_channel(self) -> None:
-        """Create the gRPC async channel and stub."""
+        """Create the gRPC async channel and generic method handles."""
         import grpc.aio
 
         options = [
@@ -109,9 +267,22 @@ class QuantumGrpcSource(EntropySource):
 
         self._channel = grpc.aio.insecure_channel(self._address, options=options)
 
-        from qr_sampler.proto.entropy_service_pb2_grpc import EntropyServiceStub
+        # Generic unary method handle — works with any proto that uses
+        # field 1 varint (request) and field 1 bytes (response).
+        self._unary_method = self._channel.unary_unary(
+            self._method_path,
+            request_serializer=_generic_request_serializer,
+            response_deserializer=_generic_response_deserializer,
+        )
 
-        self._stub = EntropyServiceStub(self._channel)
+        # Generic streaming method handle — only created when path is non-empty.
+        self._stream_method: Any | None = None
+        if self._stream_method_path:
+            self._stream_method = self._channel.stream_stream(
+                self._stream_method_path,
+                request_serializer=_generic_request_serializer,
+                response_deserializer=_generic_response_deserializer,
+            )
 
     @property
     def name(self) -> str:
@@ -138,7 +309,7 @@ class QuantumGrpcSource(EntropySource):
             n: Number of random bytes to generate.
 
         Returns:
-            Exactly *n* bytes from the QRNG server.
+            Exactly *n* bytes from the entropy server.
 
         Raises:
             EntropyUnavailableError: If the server is unreachable or the
@@ -217,36 +388,31 @@ class QuantumGrpcSource(EntropySource):
 
     async def _fetch_unary(self, n: int) -> bytes:
         """Single request-response per call. Simplest. Higher overhead."""
-        from qr_sampler.proto.entropy_service_pb2 import EntropyRequest
-
-        self._sequence_id += 1
-        request = EntropyRequest(bytes_needed=n, sequence_id=self._sequence_id)
+        request_bytes = _encode_varint_request(n)
         timeout_s = self._get_timeout() / 1000.0
-        response = await self._stub.GetEntropy(request, timeout=timeout_s)
-        data: bytes = response.data
-        return data
+        raw_response: bytes = await self._unary_method(
+            request_bytes, timeout=timeout_s, metadata=self._metadata or None,
+        )
+        return _decode_bytes_field1(raw_response)
 
     async def _fetch_server_streaming(self, n: int) -> bytes:
-        """Use the StreamEntropy RPC in a request/response style.
+        """Use the streaming RPC in a request/response style.
 
-        Sends one request and reads one response from the bidirectional stream.
+        Sends one request and reads one response from the stream.
         The stream is re-established on each call for server-streaming semantics.
         """
-        from qr_sampler.proto.entropy_service_pb2 import EntropyRequest
-
-        self._sequence_id += 1
-        request = EntropyRequest(bytes_needed=n, sequence_id=self._sequence_id)
+        request_bytes = _encode_varint_request(n)
 
         async def request_iterator() -> Any:
-            yield request
+            yield request_bytes
 
-        call = self._stub.StreamEntropy(request_iterator())
-        response = await call.read()
-        if response is None:
+        assert self._stream_method is not None  # validated in __init__
+        call = self._stream_method(request_iterator(), metadata=self._metadata or None)
+        raw_response: bytes | None = await call.read()
+        if raw_response is None:
             raise EntropyUnavailableError("Server stream ended unexpectedly")
         call.cancel()
-        data: bytes = response.data
-        return data
+        return _decode_bytes_field1(raw_response)
 
     async def _fetch_bidi_streaming(self, n: int) -> bytes:
         """Use a persistent bidirectional stream for lowest latency.
@@ -254,23 +420,22 @@ class QuantumGrpcSource(EntropySource):
         The stream is lazily initialized on first call and reused thereafter.
         If the stream breaks, it is re-established on the next call.
         """
-        from qr_sampler.proto.entropy_service_pb2 import EntropyRequest
-
-        self._sequence_id += 1
-        request = EntropyRequest(bytes_needed=n, sequence_id=self._sequence_id)
+        request_bytes = _encode_varint_request(n)
 
         try:
             if self._bidi_call is None:
-                self._bidi_call = self._stub.StreamEntropy()
+                assert self._stream_method is not None  # validated in __init__
+                self._bidi_call = self._stream_method(
+                    metadata=self._metadata or None,
+                )
 
-            await self._bidi_call.write(request)
-            response = await self._bidi_call.read()
-            if response is None:
+            await self._bidi_call.write(request_bytes)
+            raw_response: bytes | None = await self._bidi_call.read()
+            if raw_response is None:
                 # Stream ended — reset and retry.
                 self._bidi_call = None
                 raise EntropyUnavailableError("Bidi stream ended unexpectedly")
-            data: bytes = response.data
-            return data
+            return _decode_bytes_field1(raw_response)
         except EntropyUnavailableError:
             raise
         except Exception:
@@ -329,6 +494,9 @@ class QuantumGrpcSource(EntropySource):
     def health_check(self) -> dict[str, Any]:
         """Return detailed health status including circuit breaker state.
 
+        The API key is never included in the output. Only a boolean
+        ``authenticated`` flag indicates whether auth is configured.
+
         Returns:
             Dictionary with source name, availability, circuit breaker state,
             P99 latency, and connection details.
@@ -338,6 +506,8 @@ class QuantumGrpcSource(EntropySource):
             "healthy": self.is_available,
             "address": self._address,
             "mode": self._mode,
+            "method_path": self._method_path,
+            "authenticated": bool(self._api_key),
             "circuit_open": self._circuit_open,
             "p99_ms": round(self._p99_ms, 2),
             "consecutive_failures": self._consecutive_failures,

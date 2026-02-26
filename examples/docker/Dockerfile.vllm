@@ -1,0 +1,53 @@
+# Dockerfile for vLLM with qr-sampler plugin baked in.
+#
+# Installs qr-sampler (with gRPC support) at build time, producing a
+# reproducible, cacheable image. The plugin is discovered automatically
+# by vLLM via the vllm.logits_processors entry point.
+#
+# Build (from repo root):
+#   docker build -f examples/docker/Dockerfile.vllm -t qr-vllm .
+#
+# Run with system entropy (default, no external server needed):
+#   docker run --gpus 1 -p 8000:8000 \
+#     -e HF_MODEL=meta-llama/Llama-3.2-1B \
+#     -e HF_TOKEN=<your-token> \
+#     qr-vllm
+#
+# Run with a deployment profile:
+#   docker run --gpus 1 -p 8000:8000 \
+#     --env-file deployments/firefly-1/.env \
+#     -e HF_TOKEN=<your-token> \
+#     qr-vllm
+
+FROM vllm/vllm-openai:latest
+
+# Prevent Python from writing .pyc files and enable unbuffered output.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /opt/qr-sampler
+
+# Copy only pyproject.toml first to leverage Docker layer caching —
+# pip install will only re-run if dependencies change.
+COPY pyproject.toml ./
+
+# Copy source tree.
+COPY src/ ./src/
+
+# Install qr-sampler with gRPC support.
+RUN pip install --no-cache-dir ".[grpc]"
+
+# Default qr-sampler configuration: system entropy (works without
+# any external server). Override via environment variables or an
+# --env-file from a deployment profile.
+ENV QR_ENTROPY_SOURCE_TYPE=system
+
+# vLLM defaults — override via environment variables.
+ENV HF_MODEL=meta-llama/Llama-3.2-1B
+
+EXPOSE 8000
+
+# Start vLLM. The qr-sampler plugin is auto-discovered via entry points.
+CMD ["python", "-m", "vllm.entrypoints.openai.api_server", \
+     "--host", "0.0.0.0", \
+     "--port", "8000"]

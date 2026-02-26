@@ -1,0 +1,23 @@
+# docker-compose override that adds a local urandom entropy server.
+#
+# Usage:
+#   cd examples/docker
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f ../../deployments/urandom/docker-compose.override.yml \
+#     --env-file ../../deployments/urandom/.env \
+#     up --build
+
+services:
+  # ------------------------------------------------------------------
+  # gRPC entropy server (os.urandom)
+  # ------------------------------------------------------------------
+  entropy-server:
+    build:
+      context: ../..
+      dockerfile: examples/docker/Dockerfile.entropy-server
+    ports:
+      - "50051:50051"
+    environment:
+      ENTROPY_SERVER: simple_urandom_server.py
+    restart: unless-stopped

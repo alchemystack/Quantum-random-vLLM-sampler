@@ -1,8 +1,14 @@
 """Hand-written protobuf message stubs for the entropy service.
 
 These are lightweight message classes that mirror the ``entropy_service.proto``
-definition without requiring ``protoc`` code generation. They provide attribute
-access compatible with the gRPC stub expectations.
+definition using **standard protobuf wire encoding**. They produce bytes
+identical to ``protoc``-generated code, making them compatible with any
+standard gRPC server (including ``grpcurl``).
+
+Wire format reference (proto3):
+- Varint fields: tag = (field_number << 3 | 0), then LEB128-encoded value
+- Length-delimited fields: tag = (field_number << 3 | 2), then varint length, then raw bytes
+- Default-valued fields (0, empty bytes, empty string) are omitted from the wire
 
 If the proto definition changes, update these stubs or regenerate with
 ``grpc_tools.protoc``.
@@ -12,36 +18,135 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# ---------------------------------------------------------------------------
+# Protobuf wire-format helpers
+# ---------------------------------------------------------------------------
+
+
+def _encode_varint(value: int) -> bytes:
+    """Encode an unsigned integer as a protobuf varint (LEB128).
+
+    Args:
+        value: Non-negative integer to encode.
+
+    Returns:
+        LEB128-encoded bytes.
+    """
+    parts: list[int] = []
+    while value > 0x7F:
+        parts.append((value & 0x7F) | 0x80)
+        value >>= 7
+    parts.append(value & 0x7F)
+    return bytes(parts)
+
+
+def _encode_svarint(value: int) -> bytes:
+    """Encode a signed integer using ZigZag + varint (for sint32/sint64).
+
+    Args:
+        value: Signed integer to encode.
+
+    Returns:
+        ZigZag + LEB128-encoded bytes.
+    """
+    # ZigZag encoding: (n << 1) ^ (n >> 63) for 64-bit
+    zigzag = (value << 1) ^ (value >> 63)
+    return _encode_varint(zigzag)
+
+
+def _decode_varint(data: bytes, offset: int) -> tuple[int, int]:
+    """Decode a varint from bytes at the given offset.
+
+    Args:
+        data: Raw bytes.
+        offset: Starting position.
+
+    Returns:
+        Tuple of (decoded_value, new_offset).
+    """
+    result = 0
+    shift = 0
+    while True:
+        b = data[offset]
+        result |= (b & 0x7F) << shift
+        offset += 1
+        if not (b & 0x80):
+            break
+        shift += 7
+    return result, offset
+
+
+def _encode_tag(field_number: int, wire_type: int) -> bytes:
+    """Encode a protobuf field tag.
+
+    Args:
+        field_number: The proto field number (1-based).
+        wire_type: 0 = varint, 2 = length-delimited.
+
+    Returns:
+        Varint-encoded tag bytes.
+    """
+    return _encode_varint((field_number << 3) | wire_type)
+
+
+# ---------------------------------------------------------------------------
+# Message classes
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class EntropyRequest:
     """Entropy generation request message.
 
     Attributes:
-        bytes_needed: Number of random bytes requested.
-        sequence_id: Correlates request to response in streaming mode.
+        bytes_needed: Number of random bytes requested (proto field 1, int32).
+        sequence_id: Correlates request to response in streaming mode (proto field 2, int64).
     """
 
     bytes_needed: int = 0
     sequence_id: int = 0
 
     def SerializeToString(self) -> bytes:  # noqa: N802
-        """Serialize to a simple wire format.
+        """Serialize to standard protobuf wire format.
 
-        Uses a minimal custom encoding rather than full protobuf serialization
-        to avoid a hard dependency on the protobuf C extension for the message
-        classes themselves.
+        Proto3 omits default-valued fields (0) from the wire.
         """
-        import struct
-
-        return struct.pack(">iQ", self.bytes_needed, self.sequence_id)
+        parts: list[bytes] = []
+        if self.bytes_needed != 0:
+            # Field 1, wire type 0 (varint) — int32
+            parts.append(_encode_tag(1, 0))
+            parts.append(_encode_varint(self.bytes_needed))
+        if self.sequence_id != 0:
+            # Field 2, wire type 0 (varint) — int64
+            parts.append(_encode_tag(2, 0))
+            parts.append(_encode_varint(self.sequence_id))
+        return b"".join(parts)
 
     @classmethod
     def FromString(cls, data: bytes) -> EntropyRequest:  # noqa: N802
-        """Deserialize from wire format."""
-        import struct
-
-        bytes_needed, sequence_id = struct.unpack(">iQ", data)
+        """Deserialize from standard protobuf wire format."""
+        bytes_needed = 0
+        sequence_id = 0
+        offset = 0
+        while offset < len(data):
+            tag, offset = _decode_varint(data, offset)
+            field_number = tag >> 3
+            wire_type = tag & 0x07
+            if wire_type == 0:
+                value, offset = _decode_varint(data, offset)
+                if field_number == 1:
+                    bytes_needed = value
+                elif field_number == 2:
+                    sequence_id = value
+            elif wire_type == 2:
+                length, offset = _decode_varint(data, offset)
+                offset += length  # Skip unknown length-delimited fields
+            elif wire_type == 5:
+                offset += 4  # Skip unknown 32-bit fields
+            elif wire_type == 1:
+                offset += 8  # Skip unknown 64-bit fields
+            else:
+                break  # Unknown wire type — stop parsing
         return cls(bytes_needed=bytes_needed, sequence_id=sequence_id)
 
 
@@ -50,10 +155,11 @@ class EntropyResponse:
     """Entropy generation response message.
 
     Attributes:
-        data: Random bytes.
-        sequence_id: Matches the request's ``sequence_id``.
-        generation_timestamp_ns: When physical entropy was generated (nanoseconds).
-        device_id: QRNG hardware identifier.
+        data: Random bytes (proto field 1, bytes).
+        sequence_id: Matches the request's ``sequence_id`` (proto field 2, int64).
+        generation_timestamp_ns: When physical entropy was generated in nanoseconds
+            (proto field 3, int64).
+        device_id: QRNG hardware identifier (proto field 4, string).
     """
 
     data: bytes = field(default_factory=bytes)
@@ -62,38 +168,67 @@ class EntropyResponse:
     device_id: str = ""
 
     def SerializeToString(self) -> bytes:  # noqa: N802
-        """Serialize to a simple wire format."""
-        import struct
+        """Serialize to standard protobuf wire format.
 
-        device_bytes = self.device_id.encode("utf-8")
-        return struct.pack(
-            f">I{len(self.data)}sQQ H{len(device_bytes)}s",
-            len(self.data),
-            self.data,
-            self.sequence_id,
-            self.generation_timestamp_ns,
-            len(device_bytes),
-            device_bytes,
-        )
+        Proto3 omits default-valued fields from the wire.
+        """
+        parts: list[bytes] = []
+        if self.data:
+            # Field 1, wire type 2 (length-delimited) — bytes
+            parts.append(_encode_tag(1, 2))
+            parts.append(_encode_varint(len(self.data)))
+            parts.append(self.data)
+        if self.sequence_id != 0:
+            # Field 2, wire type 0 (varint) — int64
+            parts.append(_encode_tag(2, 0))
+            parts.append(_encode_varint(self.sequence_id))
+        if self.generation_timestamp_ns != 0:
+            # Field 3, wire type 0 (varint) — int64
+            parts.append(_encode_tag(3, 0))
+            parts.append(_encode_varint(self.generation_timestamp_ns))
+        if self.device_id:
+            # Field 4, wire type 2 (length-delimited) — string
+            device_bytes = self.device_id.encode("utf-8")
+            parts.append(_encode_tag(4, 2))
+            parts.append(_encode_varint(len(device_bytes)))
+            parts.append(device_bytes)
+        return b"".join(parts)
 
     @classmethod
     def FromString(cls, data: bytes) -> EntropyResponse:  # noqa: N802
-        """Deserialize from wire format."""
-        import struct
-
+        """Deserialize from standard protobuf wire format."""
+        resp_data = b""
+        sequence_id = 0
+        generation_timestamp_ns = 0
+        device_id = ""
         offset = 0
-        (data_len,) = struct.unpack_from(">I", data, offset)
-        offset += 4
-        entropy_data = data[offset : offset + data_len]
-        offset += data_len
-        sequence_id, gen_ts = struct.unpack_from(">QQ", data, offset)
-        offset += 16
-        (dev_len,) = struct.unpack_from(">H", data, offset)
-        offset += 2
-        device_id = data[offset : offset + dev_len].decode("utf-8")
+        while offset < len(data):
+            tag, offset = _decode_varint(data, offset)
+            field_number = tag >> 3
+            wire_type = tag & 0x07
+            if wire_type == 0:
+                value, offset = _decode_varint(data, offset)
+                if field_number == 2:
+                    sequence_id = value
+                elif field_number == 3:
+                    generation_timestamp_ns = value
+            elif wire_type == 2:
+                length, offset = _decode_varint(data, offset)
+                raw = data[offset : offset + length]
+                offset += length
+                if field_number == 1:
+                    resp_data = raw
+                elif field_number == 4:
+                    device_id = raw.decode("utf-8")
+            elif wire_type == 5:
+                offset += 4  # Skip unknown 32-bit fields
+            elif wire_type == 1:
+                offset += 8  # Skip unknown 64-bit fields
+            else:
+                break
         return cls(
-            data=entropy_data,
+            data=resp_data,
             sequence_id=sequence_id,
-            generation_timestamp_ns=gen_ts,
+            generation_timestamp_ns=generation_timestamp_ns,
             device_id=device_id,
         )

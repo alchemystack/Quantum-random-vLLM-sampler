@@ -57,43 +57,24 @@ The processor registers via Python entry points — no vLLM source code modifica
 ### 1. Install qr-sampler
 
 ```bash
-# Core (uses os.urandom fallback by default)
+# Core (uses os.urandom by default — works out of the box)
 pip install qr-sampler
 
 # With gRPC support (required for external entropy servers)
 pip install qr-sampler[grpc]
 ```
 
-### 2. Start an entropy server
+### 2. Start vLLM with qr-sampler
 
-The fastest way to get running — a reference server using `os.urandom()`:
-
-```bash
-# Clone and run the example server
-git clone https://github.com/alchemystack/Quantum-random-vLLM-sampler.git
-cd Quantum-random-vLLM-sampler
-pip install qr-sampler[grpc]
-
-python examples/servers/simple_urandom_server.py
-# Output: Entropy server listening on 0.0.0.0:50051
-```
-
-### 3. Configure vLLM to use qr-sampler
-
-**(macOS / Linux):**
+qr-sampler registers automatically via the `vllm.logits_processors` entry point. No external server is needed — the default entropy source is `system` (`os.urandom`).
 
 ```bash
-export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
-export QR_GRPC_SERVER_ADDRESS=localhost:50051
-export QR_GRPC_MODE=unary
-
-# Start vLLM with the plugin
 vllm serve meta-llama/Llama-3.2-1B
 ```
 
-qr-sampler registers automatically via the `vllm.logits_processors` entry point. Every token sampled by vLLM now uses entropy from your server.
+Every token sampled by vLLM now uses entropy from `os.urandom()`. To connect an external entropy server (QRNG hardware, etc.), see [Deployment profiles](#deployment-profiles) below.
 
-### 4. Send inference requests
+### 3. Send inference requests
 
 ```bash
 curl http://localhost:8000/v1/completions \
@@ -127,10 +108,24 @@ curl http://localhost:8000/v1/completions \
 
 ```bash
 cd examples/docker
-docker compose up
+docker compose up --build
 ```
 
-This starts both the entropy server and vLLM with qr-sampler pre-configured. See [examples/docker/docker-compose.yml](examples/docker/docker-compose.yml) for configuration options.
+This builds a vLLM image with qr-sampler baked in and runs it with system entropy (no external server needed). To connect an external entropy server, use a [deployment profile](#deployment-profiles):
+
+```bash
+# With an external QRNG server (just pass its .env):
+docker compose --env-file ../../deployments/firefly-1/.env up --build
+
+# With a co-located urandom gRPC server (adds a container):
+docker compose \
+  -f docker-compose.yml \
+  -f ../../deployments/urandom/docker-compose.override.yml \
+  --env-file ../../deployments/urandom/.env \
+  up --build
+```
+
+See [examples/docker/docker-compose.yml](examples/docker/docker-compose.yml) for all configuration options.
 
 ---
 
@@ -142,12 +137,16 @@ All configuration is done via environment variables with the `QR_` prefix. Per-r
 
 | Environment variable | Default | Description |
 |---|---|---|
+| `QR_ENTROPY_SOURCE_TYPE` | `system` | Primary entropy source identifier |
 | `QR_GRPC_SERVER_ADDRESS` | `localhost:50051` | gRPC entropy server address (`host:port` or `unix:///path`) |
 | `QR_GRPC_TIMEOUT_MS` | `5000` | gRPC call timeout in milliseconds |
 | `QR_GRPC_RETRY_COUNT` | `2` | Retry attempts after gRPC failure |
 | `QR_GRPC_MODE` | `unary` | Transport mode: `unary`, `server_streaming`, `bidi_streaming` |
+| `QR_GRPC_METHOD_PATH` | `/qr_entropy.EntropyService/GetEntropy` | gRPC method path for unary RPC |
+| `QR_GRPC_STREAM_METHOD_PATH` | `/qr_entropy.EntropyService/StreamEntropy` | gRPC method path for streaming RPC (empty disables streaming) |
+| `QR_GRPC_API_KEY` | *(empty)* | API key sent via gRPC metadata (empty = no auth) |
+| `QR_GRPC_API_KEY_HEADER` | `api-key` | gRPC metadata header name for the API key |
 | `QR_FALLBACK_MODE` | `system` | Fallback when primary fails: `error`, `system`, `mock_uniform` |
-| `QR_ENTROPY_SOURCE_TYPE` | `quantum_grpc` | Primary entropy source identifier |
 | `QR_CB_WINDOW_SIZE` | `100` | Rolling latency window size for P99 computation |
 | `QR_CB_MIN_TIMEOUT_MS` | `5.0` | Minimum adaptive timeout in milliseconds |
 | `QR_CB_TIMEOUT_MULTIPLIER` | `1.5` | Multiplier applied to P99 latency for adaptive timeout |
@@ -221,8 +220,8 @@ All fallback-sourced entropy is flagged in diagnostic logs so downstream analysi
 
 | Source | Identifier | Description |
 |---|---|---|
-| **Quantum gRPC** | `quantum_grpc` | Remote QRNG via gRPC (default) |
-| **System** | `system` | `os.urandom()` — OS cryptographic RNG |
+| **System** | `system` | `os.urandom()` — OS cryptographic RNG (default) |
+| **Quantum gRPC** | `quantum_grpc` | Remote entropy server via gRPC (any protocol) |
 | **Timing noise** | `timing_noise` | CPU timing jitter (experimental) |
 | **Mock uniform** | `mock_uniform` | Configurable test source with seed/bias |
 
@@ -295,13 +294,66 @@ High-entropy (uncertain) distributions get higher temperatures; low-entropy (con
 
 ---
 
+## Deployment profiles
+
+qr-sampler uses a two-layer architecture to separate the sampler plugin from entropy source configuration:
+
+- **Layer 1 (source-agnostic core):** The sampler plugin + vLLM Docker image. Uses `system` entropy by default — works without any external server.
+- **Layer 2 (deployment profiles):** Named folders under `deployments/` that configure how to connect to a specific entropy source. Each contains a `.env` file and optionally a `docker-compose.override.yml`.
+
+```
+deployments/
+  _template/     # Copy this to create your own profile
+  urandom/       # os.urandom() via a separate gRPC server (good starting point)
+  firefly-1/     # Example: external QRNG server with API key auth
+```
+
+To use a profile, pass its `.env` to Docker Compose:
+
+```bash
+cd examples/docker
+docker compose --env-file ../../deployments/my-server/.env up --build
+```
+
+If the profile includes extra containers (like the urandom server), merge its override file:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f ../../deployments/urandom/docker-compose.override.yml \
+  --env-file ../../deployments/urandom/.env \
+  up --build
+```
+
+To create a profile for your own server, copy the template and fill in the `.env`:
+
+```bash
+cp -r deployments/_template deployments/my-server
+# Edit deployments/my-server/.env with your server address, method paths, auth, etc.
+```
+
+See [deployments/README.md](deployments/README.md) for the full guide.
+
+### Protocol flexibility
+
+qr-sampler's gRPC client is **protocol-agnostic**. It does not require your server to implement a specific `.proto` — it uses configurable method paths and generic protobuf wire-format encoding. The only requirement is that your proto puts the byte count as field 1 in the request and the random bytes as field 1 in the response. This covers the built-in `qr_entropy.EntropyService` protocol and any server with the same field layout (e.g., `qrng.QuantumRNG`).
+
+Configure via:
+- `QR_GRPC_METHOD_PATH` — the unary RPC method (e.g., `/qrng.QuantumRNG/GetRandomBytes`)
+- `QR_GRPC_STREAM_METHOD_PATH` — the streaming RPC method (empty to disable streaming)
+- `QR_GRPC_API_KEY` / `QR_GRPC_API_KEY_HEADER` — authentication via gRPC metadata
+
+The API key is never logged. Health checks report only `"authenticated": true/false`.
+
+---
+
 ## Setting up your own entropy source
 
 qr-sampler is designed to connect *any* randomness source to LLM token sampling. This section walks through connecting your own hardware.
 
 ### Approach A: gRPC server (recommended)
 
-The simplest path — implement a gRPC server that speaks the `qr_entropy.EntropyService` protocol.
+The simplest path — implement a gRPC server. You can use the built-in `qr_entropy.EntropyService` protocol (example servers provided), or your own proto as long as field 1 carries the byte count (request) and random bytes (response).
 
 #### 5-minute walkthrough
 
@@ -335,13 +387,18 @@ pip install grpcio qr-sampler
 python my_qrng_server.py --port 50051
 ```
 
-4. **Configure qr-sampler:**
-
-**(macOS / Linux):**
+4. **Configure qr-sampler** — create a deployment profile or set env vars directly:
 
 ```bash
-export QR_GRPC_SERVER_ADDRESS=localhost:50051
+# Option A: Create a deployment profile (recommended for Docker)
+cp -r deployments/_template deployments/my-server
+# Edit deployments/my-server/.env:
+#   QR_ENTROPY_SOURCE_TYPE=quantum_grpc
+#   QR_GRPC_SERVER_ADDRESS=localhost:50051
+
+# Option B: Set environment variables directly (macOS / Linux)
 export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
+export QR_GRPC_SERVER_ADDRESS=localhost:50051
 ```
 
 The template handles all gRPC boilerplate (unary + bidirectional streaming, health checks, graceful shutdown). You only write the hardware-specific code.
@@ -456,7 +513,10 @@ Test your entropy server with the built-in test infrastructure:
 from qr_sampler.entropy.quantum import QuantumGrpcSource
 from qr_sampler.config import QRSamplerConfig
 
-config = QRSamplerConfig(grpc_server_address="localhost:50051")
+config = QRSamplerConfig(
+    entropy_source_type="quantum_grpc",
+    grpc_server_address="localhost:50051",
+)
 source = QuantumGrpcSource(config)
 
 # Basic connectivity
@@ -553,11 +613,25 @@ examples/
 │   ├── timing_noise_server.py     # CPU timing entropy server
 │   └── qrng_template_server.py    # Annotated template for custom QRNGs
 ├── docker/
+│   ├── Dockerfile.vllm            # vLLM + qr-sampler image (build-time install)
 │   ├── Dockerfile.entropy-server  # Docker image for entropy servers
-│   └── docker-compose.yml         # Full stack (entropy + vLLM)
+│   └── docker-compose.yml         # vLLM-only (source-agnostic, uses system entropy)
 └── systemd/
     ├── qr-entropy-server.service  # systemd unit file
     └── qr-entropy-server.env      # Environment file
+
+deployments/
+├── README.md                      # How profiles work, how to create your own
+├── .gitignore                     # Add profile names here to exclude credentials
+├── _template/                     # Copy this to create a new profile
+│   └── .env                       # Annotated env template with all settings
+├── urandom/                       # os.urandom() via a separate gRPC server
+│   ├── .env                       # Points vLLM at entropy-server:50051
+│   ├── docker-compose.override.yml # Adds the entropy-server container
+│   └── README.md                  # Setup guide
+└── firefly-1/                     # Example: external QRNG with API key auth
+    ├── .env                       # 10.0.0.115:50051, qrng.QuantumRNG protocol
+    └── README.md                  # Server details, rate limits
 ```
 
 ---

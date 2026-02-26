@@ -35,8 +35,12 @@ class TestDefaults:
         assert default_config.grpc_timeout_ms == 5000.0
         assert default_config.grpc_retry_count == 2
         assert default_config.grpc_mode == "unary"
+        assert default_config.grpc_method_path == "/qr_entropy.EntropyService/GetEntropy"
+        assert default_config.grpc_stream_method_path == "/qr_entropy.EntropyService/StreamEntropy"
+        assert default_config.grpc_api_key == ""
+        assert default_config.grpc_api_key_header == "api-key"
         assert default_config.fallback_mode == "system"
-        assert default_config.entropy_source_type == "quantum_grpc"
+        assert default_config.entropy_source_type == "system"
 
     def test_amplification_defaults(self, default_config: QRSamplerConfig) -> None:
         assert default_config.signal_amplifier_type == "zscore_mean"
@@ -106,6 +110,26 @@ class TestEnvVarLoading:
         assert config.top_k == 100
         assert config.top_p == 0.95
         assert config.temperature_strategy == "edt"
+
+    def test_grpc_method_path_env_var(self) -> None:
+        with patch.dict(os.environ, {"QR_GRPC_METHOD_PATH": "/qrng.QuantumRNG/GetRandomBytes"}):
+            config = QRSamplerConfig(_env_file=None)  # type: ignore[call-arg]
+        assert config.grpc_method_path == "/qrng.QuantumRNG/GetRandomBytes"
+
+    def test_grpc_stream_method_path_env_var(self) -> None:
+        with patch.dict(os.environ, {"QR_GRPC_STREAM_METHOD_PATH": ""}):
+            config = QRSamplerConfig(_env_file=None)  # type: ignore[call-arg]
+        assert config.grpc_stream_method_path == ""
+
+    def test_grpc_api_key_env_var(self) -> None:
+        with patch.dict(os.environ, {"QR_GRPC_API_KEY": "test-key-123"}):
+            config = QRSamplerConfig(_env_file=None)  # type: ignore[call-arg]
+        assert config.grpc_api_key == "test-key-123"
+
+    def test_grpc_api_key_header_env_var(self) -> None:
+        with patch.dict(os.environ, {"QR_GRPC_API_KEY_HEADER": "authorization"}):
+            config = QRSamplerConfig(_env_file=None)  # type: ignore[call-arg]
+        assert config.grpc_api_key_header == "authorization"
 
     def test_non_qr_env_vars_ignored(self) -> None:
         with patch.dict(os.environ, {"OTHER_TOP_K": "999"}):
@@ -218,6 +242,10 @@ class TestNonOverridableFields:
             "grpc_timeout_ms",
             "grpc_retry_count",
             "grpc_mode",
+            "grpc_method_path",
+            "grpc_stream_method_path",
+            "grpc_api_key",
+            "grpc_api_key_header",
             "fallback_mode",
             "entropy_source_type",
         ],
@@ -236,6 +264,10 @@ class TestNonOverridableFields:
             "grpc_timeout_ms",
             "grpc_retry_count",
             "grpc_mode",
+            "grpc_method_path",
+            "grpc_stream_method_path",
+            "grpc_api_key",
+            "grpc_api_key_header",
             "fallback_mode",
             "entropy_source_type",
         ],
@@ -288,6 +320,10 @@ class TestFieldSets:
         assert "grpc_timeout_ms" in infra_fields
         assert "grpc_retry_count" in infra_fields
         assert "grpc_mode" in infra_fields
+        assert "grpc_method_path" in infra_fields
+        assert "grpc_stream_method_path" in infra_fields
+        assert "grpc_api_key" in infra_fields
+        assert "grpc_api_key_header" in infra_fields
         assert "fallback_mode" in infra_fields
         assert "entropy_source_type" in infra_fields
 

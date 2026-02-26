@@ -1,62 +1,50 @@
-# Docker Compose for running qr-sampler with an entropy server and vLLM.
+# Docker Compose for vLLM with qr-sampler plugin.
 #
-# This sets up the full stack:
-#   1. entropy-server: gRPC entropy source (os.urandom by default)
-#   2. vllm: vLLM inference server with qr-sampler plugin installed
+# By default, this runs vLLM with system entropy (os.urandom) — no
+# external entropy server is needed. To connect to an external entropy
+# source, use a deployment profile's .env file.
 #
-# Quick start:
-#   docker compose up
+# Quick start (system entropy):
+#   docker compose up --build
 #
-# Use a different entropy server:
-#   ENTROPY_SERVER=timing_noise_server.py docker compose up
+# With a deployment profile (e.g. an external QRNG server):
+#   docker compose --env-file ../../deployments/firefly-1/.env up --build
 #
-# Use bidi streaming for lowest latency:
-#   QR_GRPC_MODE=bidi_streaming docker compose up
+# With a profile that adds services (e.g. urandom gRPC server):
+#   docker compose -f docker-compose.yml \
+#     -f ../../deployments/urandom/docker-compose.override.yml \
+#     --env-file ../../deployments/urandom/.env up --build
 #
 # Notes:
-#   - The vLLM service requires a GPU. Remove 'deploy.resources' if testing
-#     on CPU (vLLM will fall back to CPU mode for some models).
+#   - Requires a GPU. Remove 'deploy.resources' to test on CPU
+#     (vLLM will fall back to CPU mode for some models).
+#   - Set HF_TOKEN in your environment or .env for gated models.
 #   - Adjust HF_MODEL to the Hugging Face model you want to serve.
-#   - Both services share a Docker network so the entropy server is
-#     reachable at 'entropy-server:50051' from vLLM.
 
 services:
-  # ------------------------------------------------------------------
-  # Entropy server — provides random bytes over gRPC
-  # ------------------------------------------------------------------
-  entropy-server:
-    build:
-      context: ../..
-      dockerfile: examples/docker/Dockerfile.entropy-server
-    ports:
-      - "${ENTROPY_PORT:-50051}:50051"
-    environment:
-      # Which example server to run (default: simple_urandom_server.py).
-      ENTROPY_SERVER: "${ENTROPY_SERVER:-simple_urandom_server.py}"
-    restart: unless-stopped
-
   # ------------------------------------------------------------------
   # vLLM inference server with qr-sampler plugin
   # ------------------------------------------------------------------
   vllm:
-    image: vllm/vllm-openai:latest
-    # Override the image entrypoint (vllm serve) so our command runs as a
-    # shell script instead of being appended as arguments to vllm serve.
-    entrypoint: ["/bin/bash", "-c"]
+    build:
+      context: ../..
+      dockerfile: examples/docker/Dockerfile.vllm
     ports:
       - "${VLLM_PORT:-8000}:8000"
-    volumes:
-      # Mount the full repo so pip can find README.md, src/, pyproject.toml.
-      # Read-only: the command copies to a writable temp dir before install.
-      - ../../:/opt/qr-sampler:ro
     environment:
       # --- qr-sampler configuration ---
-      QR_ENTROPY_SOURCE_TYPE: "quantum_grpc"
-      QR_GRPC_SERVER_ADDRESS: "entropy-server:50051"
+      # Default: system entropy (os.urandom). Override via --env-file
+      # from a deployment profile to use quantum_grpc or other sources.
+      QR_ENTROPY_SOURCE_TYPE: "${QR_ENTROPY_SOURCE_TYPE:-system}"
+      QR_GRPC_SERVER_ADDRESS: "${QR_GRPC_SERVER_ADDRESS:-localhost:50051}"
       QR_GRPC_MODE: "${QR_GRPC_MODE:-unary}"
-      QR_GRPC_TIMEOUT_MS: "5000"
-      QR_FALLBACK_MODE: "system"
-      QR_SAMPLE_COUNT: "20480"
+      QR_GRPC_TIMEOUT_MS: "${QR_GRPC_TIMEOUT_MS:-5000}"
+      QR_GRPC_METHOD_PATH: "${QR_GRPC_METHOD_PATH:-/qr_entropy.EntropyService/GetEntropy}"
+      QR_GRPC_STREAM_METHOD_PATH: "${QR_GRPC_STREAM_METHOD_PATH-/qr_entropy.EntropyService/StreamEntropy}"
+      QR_GRPC_API_KEY: "${QR_GRPC_API_KEY:-}"
+      QR_GRPC_API_KEY_HEADER: "${QR_GRPC_API_KEY_HEADER:-api-key}"
+      QR_FALLBACK_MODE: "${QR_FALLBACK_MODE:-system}"
+      QR_SAMPLE_COUNT: "${QR_SAMPLE_COUNT:-20480}"
       QR_TEMPERATURE_STRATEGY: "${QR_TEMPERATURE_STRATEGY:-fixed}"
       QR_FIXED_TEMPERATURE: "${QR_FIXED_TEMPERATURE:-0.7}"
       QR_TOP_K: "${QR_TOP_K:-50}"
@@ -64,23 +52,18 @@ services:
       QR_LOG_LEVEL: "${QR_LOG_LEVEL:-summary}"
 
       # --- Hugging Face model to serve ---
-      HF_MODEL: "${HF_MODEL:-Qwen/Qwen2.5-3B-Instruct-AWQ}"
-      HF_TOKEN: "${HF_TOKEN}"
-    # Install qr-sampler plugin then start vLLM.
-    # command must be a single-element list so the entire script is passed as
-    # one argument to the entrypoint's "bash -c".
+      HF_MODEL: "${HF_MODEL:-meta-llama/Llama-3.2-1B}"
+      HF_TOKEN: "${HF_TOKEN:-}"
     command:
-      - >-
-        cp -r /opt/qr-sampler /tmp/qr-sampler &&
-        pip install /tmp/qr-sampler[grpc] &&
-        python3 -m vllm.entrypoints.openai.api_server
-        --model ${HF_MODEL:-Qwen/Qwen2.5-3B-Instruct-AWQ}
-        --host 0.0.0.0
-        --port 8000
-        --gpu-memory-utilization ${GPU_MEM_UTIL:-0.75}
-        --max-model-len ${MAX_MODEL_LEN:-2048}
-    depends_on:
-      - entropy-server
+      - python
+      - -m
+      - vllm.entrypoints.openai.api_server
+      - --model
+      - ${HF_MODEL:-meta-llama/Llama-3.2-1B}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
     deploy:
       resources:
         reservations:

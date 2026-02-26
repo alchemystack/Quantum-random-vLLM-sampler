@@ -81,12 +81,28 @@ class QRSamplerConfig(BaseSettings):
         default="unary",
         description="gRPC transport mode: 'unary', 'server_streaming', 'bidi_streaming'",
     )
+    grpc_method_path: str = Field(
+        default="/qr_entropy.EntropyService/GetEntropy",
+        description="gRPC method path for unary RPC (e.g. '/qrng.QuantumRNG/GetRandomBytes')",
+    )
+    grpc_stream_method_path: str = Field(
+        default="/qr_entropy.EntropyService/StreamEntropy",
+        description="gRPC method path for streaming RPC (empty string disables streaming modes)",
+    )
+    grpc_api_key: str = Field(
+        default="",
+        description="API key sent via gRPC metadata (empty = no auth)",
+    )
+    grpc_api_key_header: str = Field(
+        default="api-key",
+        description="gRPC metadata header name for the API key",
+    )
     fallback_mode: str = Field(
         default="system",
         description="Fallback entropy source: 'error', 'system', 'mock_uniform'",
     )
     entropy_source_type: str = Field(
-        default="quantum_grpc",
+        default="system",
         description="Primary entropy source identifier",
     )
 

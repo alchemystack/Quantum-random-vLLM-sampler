@@ -1,0 +1,9 @@
+# Deployment profiles .gitignore
+#
+# By default, all profiles are tracked in version control. If a profile
+# contains credentials (API keys, tokens) that you do not want committed
+# to a public repository, add its folder name here.
+#
+# Examples:
+#   my-private-server/
+#   production/
