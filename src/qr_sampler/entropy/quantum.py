@@ -193,8 +193,7 @@ class QuantumGrpcSource(EntropySource):
             import grpc.aio  # noqa: F401 — availability check
         except ImportError as exc:
             raise ImportError(
-                "grpcio is required for QuantumGrpcSource. "
-                "Install it with: pip install qr-sampler"
+                "grpcio is required for QuantumGrpcSource. Install it with: pip install qr-sampler"
             ) from exc
 
         self._address = config.grpc_server_address
