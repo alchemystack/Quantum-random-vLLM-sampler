@@ -58,8 +58,8 @@ class TestDefaults:
         assert default_config.edt_max_temp == 2.0
 
     def test_selection_defaults(self, default_config: QRSamplerConfig) -> None:
-        assert default_config.top_k == 50
-        assert default_config.top_p == 0.9
+        assert default_config.top_k == 0
+        assert default_config.top_p == 1.0
 
     def test_logging_defaults(self, default_config: QRSamplerConfig) -> None:
         assert default_config.log_level == "summary"
@@ -134,7 +134,7 @@ class TestEnvVarLoading:
     def test_non_qr_env_vars_ignored(self) -> None:
         with patch.dict(os.environ, {"OTHER_TOP_K": "999"}):
             config = QRSamplerConfig(_env_file=None)  # type: ignore[call-arg]
-        assert config.top_k == 50  # Unchanged default
+        assert config.top_k == 0  # Unchanged default
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ class TestResolveConfig:
 
     def test_original_unchanged(self, default_config: QRSamplerConfig) -> None:
         resolve_config(default_config, {"qr_top_k": 100})
-        assert default_config.top_k == 50  # Original unchanged
+        assert default_config.top_k == 0  # Original unchanged
 
     def test_mixed_qr_and_non_qr_keys(self, default_config: QRSamplerConfig) -> None:
         result = resolve_config(
@@ -378,7 +378,7 @@ class TestModelCopy:
         copy = default_config.model_copy(update={"top_k": 200})
         assert copy is not default_config
         assert copy.top_k == 200
-        assert default_config.top_k == 50
+        assert default_config.top_k == 0
 
     def test_model_copy_preserves_unmodified(self, default_config: QRSamplerConfig) -> None:
         copy = default_config.model_copy(update={"top_k": 200})

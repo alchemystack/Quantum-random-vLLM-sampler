@@ -182,11 +182,11 @@ class QRSamplerConfig(BaseSettings):
     # --- Token Selection (per-request overridable) ---
 
     top_k: int = Field(
-        default=50,
+        default=0,
         description="Top-k filtering (<=0 disables)",
     )
     top_p: float = Field(
-        default=0.9,
+        default=1.0,
         description="Nucleus sampling threshold (1.0 disables)",
     )
 

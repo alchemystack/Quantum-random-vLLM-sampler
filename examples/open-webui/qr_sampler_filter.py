@@ -55,11 +55,11 @@ class Filter:
 
         # --- Token selection ---
         top_k: int = Field(
-            default=50,
+            default=0,
             description="Top-k filtering: keep only the k most probable tokens (0 disables).",
         )
         top_p: float = Field(
-            default=0.9,
+            default=1.0,
             description="Nucleus sampling threshold (1.0 disables).",
         )
 
@@ -98,18 +98,6 @@ class Filter:
             default=20480,
             description="Number of entropy bytes to fetch per token.",
         )
-        population_mean: float = Field(
-            default=127.5,
-            description="Null-hypothesis mean of byte values {0..255}.",
-        )
-        population_std: float = Field(
-            default=73.61215932167728,
-            description="Population std for continuous uniform [0, 255].",
-        )
-        uniform_clamp_epsilon: float = Field(
-            default=1e-10,
-            description="Clamp u to (epsilon, 1-epsilon) to avoid degenerate CDF.",
-        )
 
         # --- Logging ---
         log_level: str = Field(
@@ -130,9 +118,6 @@ class Filter:
         {
             "signal_amplifier_type",
             "sample_count",
-            "population_mean",
-            "population_std",
-            "uniform_clamp_epsilon",
             "temperature_strategy",
             "fixed_temperature",
             "edt_base_temp",
