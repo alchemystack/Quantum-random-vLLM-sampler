@@ -25,12 +25,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install only the runtime dependencies needed for the entropy server.
-# We install qr-sampler[grpc] which brings in grpcio, protobuf, numpy,
-# pydantic, and pydantic-settings.
+# qr-sampler includes grpcio, protobuf, numpy, pydantic, and pydantic-settings.
 COPY pyproject.toml ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir -e ".[grpc]"
+RUN pip install --no-cache-dir -e .
 
 # Copy the example servers into the image.
 COPY examples/servers/ ./servers/

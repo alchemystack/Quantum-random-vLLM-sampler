@@ -31,9 +31,6 @@ pip install -e .
 # Install with dev dependencies
 pip install -e ".[dev]"
 
-# Install with gRPC support
-pip install -e ".[grpc]"
-
 # Lint and format
 ruff check src/ tests/
 ruff format --check src/ tests/
@@ -286,7 +283,6 @@ If the proto definition changes, these stubs must be updated manually or regener
 
 ## Dependencies
 
-- **Runtime:** `numpy>=1.24.0`, `pydantic>=2.0.0`, `pydantic-settings>=2.0.0`
-- **Optional (gRPC):** `grpcio>=1.60.0`, `protobuf>=4.21.0` -- install via `pip install qr-sampler[grpc]`
+- **Runtime:** `numpy>=1.24.0`, `pydantic>=2.0.0`, `pydantic-settings>=2.0.0`, `grpcio>=1.60.0`, `protobuf>=4.21.0`
 - **Dev:** `pytest>=7.0`, `pytest-cov>=4.0`, `scipy>=1.10.0`, `ruff>=0.4.0`, `mypy>=1.8.0`, `pre-commit>=3.0`, `bandit>=1.7.0`
 - **Implicit:** vLLM V1 (provides `LogitsProcessor` base class, `torch`). Not listed as a dependency since the plugin runs inside vLLM's process.

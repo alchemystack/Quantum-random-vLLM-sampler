@@ -32,8 +32,8 @@ COPY pyproject.toml ./
 # Copy source tree.
 COPY src/ ./src/
 
-# Install qr-sampler with gRPC support.
-RUN pip install --no-cache-dir ".[grpc]"
+# Install qr-sampler (includes gRPC support).
+RUN pip install --no-cache-dir .
 
 # Default qr-sampler configuration: system entropy (works without
 # any external server). Override via environment variables or an

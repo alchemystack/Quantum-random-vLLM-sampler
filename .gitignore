@@ -44,5 +44,11 @@ node_modules/
 # Environment files
 .env
 
+# Claude Code
+.claude/
+
+# Zenflow (development task tracking)
+.zenflow/
+
 # Setuptools SCM
 src/qr_sampler/_version.py

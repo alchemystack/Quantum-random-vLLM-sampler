@@ -26,6 +26,8 @@ dependencies = [
     "numpy>=1.24.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
+    "grpcio>=1.60.0",
+    "protobuf>=4.21.0",
 ]
 
 [project.urls]
@@ -35,12 +37,7 @@ Issues = "https://github.com/qr-sampler/qr-sampler/issues"
 Changelog = "https://github.com/qr-sampler/qr-sampler/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-grpc = [
-    "grpcio>=1.60.0",
-    "protobuf>=4.21.0",
-]
 dev = [
-    "qr-sampler[grpc]",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "scipy>=1.10.0",

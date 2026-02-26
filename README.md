@@ -5,7 +5,7 @@
 qr-sampler is a [vLLM V1](https://github.com/vllm-project/vllm) LogitsProcessor plugin that replaces standard pseudorandom token sampling with entropy from external sources — quantum random number generators (QRNGs), processor timing jitter, or any hardware you connect via gRPC. It is designed for researchers studying non-deterministic LLM behavior and the potential influence of physical randomness on language model outputs.
 
 ```
-pip install qr-sampler[grpc]
+pip install qr-sampler
 ```
 
 ---
@@ -104,8 +104,8 @@ See [deployments/README.md](deployments/README.md) for the full guide.
 ### Bare-metal install (without Docker)
 
 ```bash
-# Install with gRPC support (required for external entropy servers)
-pip install qr-sampler[grpc]
+# Install qr-sampler (includes gRPC support)
+pip install qr-sampler
 
 # Start vLLM — qr-sampler registers automatically via entry points
 vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096 --gpu-memory-utilization 0.80
@@ -121,12 +121,7 @@ vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096 --gpu-me
 
 ### System entropy fallback
 
-Without an external entropy source, qr-sampler falls back to `os.urandom()`. This is useful for development and testing but does not provide the quantum randomness needed for consciousness-research experiments.
-
-```bash
-pip install qr-sampler
-vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096 --gpu-memory-utilization 0.80
-```
+Without an external entropy source, qr-sampler falls back to `os.urandom()`. This is useful for development and testing but does not provide the quantum randomness needed for consciousness-research experiments. To use system entropy, set `QR_ENTROPY_SOURCE_TYPE=system` (this is the default).
 
 ### Per-request parameter overrides
 
@@ -447,7 +442,7 @@ class QRNGHardware:
 3. **Run it:**
 
 ```bash
-pip install grpcio qr-sampler
+pip install qr-sampler
 python my_qrng_server.py --port 50051
 ```
 
