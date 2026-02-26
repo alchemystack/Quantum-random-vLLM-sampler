@@ -47,7 +47,9 @@ ENV HF_MODEL=meta-llama/Llama-3.2-1B
 
 EXPOSE 8000
 
+# Reset ENTRYPOINT set by vllm/vllm-openai base image so CMD runs as-is.
+ENTRYPOINT []
+
 # Start vLLM. The qr-sampler plugin is auto-discovered via entry points.
-CMD ["python", "-m", "vllm.entrypoints.openai.api_server", \
-     "--host", "0.0.0.0", \
-     "--port", "8000"]
+# Shell form so ${HF_MODEL} is resolved at runtime from the environment.
+CMD vllm serve ${HF_MODEL} --host 0.0.0.0 --port 8000
