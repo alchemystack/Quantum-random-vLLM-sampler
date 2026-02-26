@@ -60,3 +60,29 @@ The only requirement is that:
 - The **response** has the random bytes as protobuf **field 1** (length-delimited bytes).
 
 Any proto definition following this convention works without code changes.
+
+## Web UI (optional)
+
+This template includes [Open WebUI](https://github.com/open-webui/open-webui), a
+ChatGPT-style web interface. It is not started by default — enable it with the
+`ui` Docker Compose profile:
+
+```bash
+docker compose --profile ui up --build
+```
+
+Open http://localhost:3000 to start chatting. Open WebUI connects to vLLM
+automatically.
+
+A pre-built filter function for controlling qr-sampler parameters from the UI is
+available at [`examples/open-webui/`](../../examples/open-webui/). See that
+directory's README for import instructions.
+
+### Customizing the UI
+
+| Setting | `.env` variable | Default |
+|---------|----------------|---------|
+| Port | `OPEN_WEBUI_PORT` | `3000` |
+| Authentication | `OPEN_WEBUI_AUTH` | `false` |
+
+Set `OPEN_WEBUI_AUTH=true` if the server is accessible by others.

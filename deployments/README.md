@@ -35,6 +35,17 @@ cp .env.example .env
 docker compose up --build
 ```
 
+To also start [Open WebUI](https://github.com/open-webui/open-webui) (a
+ChatGPT-style web interface), add `--profile ui`:
+
+```bash
+docker compose --profile ui up --build
+```
+
+Then open http://localhost:3000. See each profile's README for UI setup details
+and the optional [qr-sampler filter function](../examples/open-webui/) for
+controlling sampling parameters from the UI.
+
 ## Creating your own profile
 
 1. Copy the template:

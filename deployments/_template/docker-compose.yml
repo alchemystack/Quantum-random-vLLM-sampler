@@ -72,3 +72,24 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Open WebUI (optional — start with: docker compose --profile ui up)
+  # ------------------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    profiles: ["ui"]
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    environment:
+      OPENAI_API_BASE_URL: "http://vllm:8000/v1"
+      OPENAI_API_KEY: "unused"
+      WEBUI_AUTH: "${OPEN_WEBUI_AUTH:-false}"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - vllm
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:

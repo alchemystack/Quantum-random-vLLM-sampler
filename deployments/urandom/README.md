@@ -65,6 +65,44 @@ connection open, reducing per-token overhead to ~50-100us on the same machine.
 - **Development**: Test changes to the gRPC client without needing real
   hardware.
 
+## Web UI (optional)
+
+This profile includes [Open WebUI](https://github.com/open-webui/open-webui), a
+ChatGPT-style web interface. It is not started by default — enable it with the
+`ui` Docker Compose profile:
+
+```bash
+docker compose --profile ui up --build
+```
+
+Open http://localhost:3000 to start chatting. Open WebUI connects to vLLM
+automatically — no configuration needed.
+
+### Controlling qr-sampler parameters from the UI
+
+A pre-built filter function lets you adjust sampling parameters (temperature,
+top-k, top-p, sample count, etc.) directly from the Open WebUI admin panel
+instead of editing environment variables or API calls.
+
+To install the filter:
+
+1. Open http://localhost:3000 and go to **Admin Panel > Functions**.
+2. Click **Import** and select [`examples/open-webui/qr_sampler_filter.json`](../../examples/open-webui/qr_sampler_filter.json).
+3. Toggle the function to **Global** so it applies to all chats.
+4. Click the **gear icon** to open Valves and adjust parameters.
+
+See [`examples/open-webui/README.md`](../../examples/open-webui/README.md) for
+the full guide.
+
+### Customizing the UI
+
+| Setting | `.env` variable | Default |
+|---------|----------------|---------|
+| Port | `OPEN_WEBUI_PORT` | `3000` |
+| Authentication | `OPEN_WEBUI_AUTH` | `false` |
+
+Set `OPEN_WEBUI_AUTH=true` if the server is accessible by others.
+
 ## Next steps
 
 Once this profile works, you can:

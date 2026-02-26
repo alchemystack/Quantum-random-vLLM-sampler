@@ -150,6 +150,44 @@ curl http://localhost:8000/v1/completions \
 
 ---
 
+## Web UI
+
+qr-sampler works with [Open WebUI](https://github.com/open-webui/open-webui), a
+self-hosted ChatGPT-style interface that connects to vLLM's OpenAI-compatible
+API. Every deployment profile includes it as an optional service — add
+`--profile ui` to start it alongside vLLM:
+
+```bash
+cd deployments/urandom
+docker compose --profile ui up --build
+```
+
+Then open http://localhost:3000 to start chatting. Without `--profile ui`, Open
+WebUI does not start and nothing changes.
+
+### Controlling qr-sampler from the UI
+
+A pre-built [filter function](examples/open-webui/) injects qr-sampler
+per-request parameters into every chat message via the Open WebUI Valves system.
+This lets you adjust temperature, top-k, top-p, sample count, and other sampling
+parameters from the admin panel without editing environment variables or writing
+API calls.
+
+To set it up:
+
+1. Go to **Admin Panel > Functions** in Open WebUI.
+2. Click **Import** and select [`examples/open-webui/qr_sampler_filter.json`](examples/open-webui/qr_sampler_filter.json).
+3. Toggle the function to **Global**.
+4. Click the **gear icon** to adjust parameters.
+
+See [`examples/open-webui/README.md`](examples/open-webui/README.md) for the
+full guide, including all available Valve parameters and how the filter works.
+
+> Open WebUI is entirely optional. qr-sampler works the same way with direct API
+> calls, `curl`, Python clients, or any OpenAI-compatible tool.
+
+---
+
 ## Configuration reference
 
 All configuration is done via environment variables with the `QR_` prefix. Per-request overrides use the `qr_` prefix in `extra_args`.
@@ -645,6 +683,10 @@ examples/
 │   ├── simple_urandom_server.py   # Minimal reference server (~50 lines)
 │   ├── timing_noise_server.py     # CPU timing entropy server
 │   └── qrng_template_server.py    # Annotated template for custom QRNGs
+├── open-webui/
+│   ├── qr_sampler_filter.py       # Open WebUI filter function (source)
+│   ├── qr_sampler_filter.json     # Open WebUI importable JSON
+│   └── README.md                  # Filter function docs
 ├── docker/
 │   ├── Dockerfile.vllm            # vLLM + qr-sampler image (build-time install)
 │   └── Dockerfile.entropy-server  # Docker image for entropy servers
