@@ -50,4 +50,4 @@ ENTRYPOINT []
 
 # Start vLLM. The qr-sampler plugin is auto-discovered via entry points.
 # Shell form so environment variables are resolved at runtime.
-CMD vllm serve ${HF_MODEL} --host 0.0.0.0 --port 8000 --dtype half --gpu-memory-utilization 0.90
+CMD vllm serve ${HF_MODEL} --host 0.0.0.0 --port 8000 --dtype half --max-model-len 8096

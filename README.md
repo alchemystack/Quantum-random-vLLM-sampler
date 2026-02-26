@@ -108,7 +108,7 @@ See [deployments/README.md](deployments/README.md) for the full guide.
 pip install qr-sampler[grpc]
 
 # Start vLLM — qr-sampler registers automatically via entry points
-vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096
 ```
 
 Configure the entropy source via environment variables:
@@ -116,7 +116,7 @@ Configure the entropy source via environment variables:
 ```bash
 export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
 export QR_GRPC_SERVER_ADDRESS=localhost:50051
-vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096
 ```
 
 ### System entropy fallback
@@ -125,7 +125,7 @@ Without an external entropy source, qr-sampler falls back to `os.urandom()`. Thi
 
 ```bash
 pip install qr-sampler
-vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096
 ```
 
 ### Per-request parameter overrides
@@ -430,7 +430,7 @@ Or configure directly via environment variables (bare-metal):
 ```bash
 export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
 export QR_GRPC_SERVER_ADDRESS=localhost:50051
-vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096
 ```
 
 The template handles all gRPC boilerplate (unary + bidirectional streaming, health checks, graceful shutdown). You only write the hardware-specific code.
