@@ -1,0 +1,74 @@
+# Docker Compose template for a custom entropy source.
+#
+# Copy this entire directory to create a new deployment profile:
+#   cp -r deployments/_template deployments/my-server
+#
+# Then:
+#   1. cp .env.example .env
+#   2. Edit .env with your server's address, method paths, and credentials
+#   3. docker compose up --build
+#
+# If your entropy server runs as a container (not external), uncomment the
+# entropy-server service below and provide its Dockerfile or image.
+
+services:
+  # ------------------------------------------------------------------
+  # (Optional) Co-located entropy server
+  # ------------------------------------------------------------------
+  # Uncomment and configure if your entropy server runs as a container.
+  #
+  # entropy-server:
+  #   build:
+  #     context: ../..
+  #     dockerfile: examples/docker/Dockerfile.entropy-server
+  #   ports:
+  #     - "${ENTROPY_SERVER_PORT:-50051}:50051"
+  #   environment:
+  #     ENTROPY_SERVER: simple_urandom_server.py  # Replace with your server
+  #   restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # vLLM inference server with qr-sampler plugin
+  # ------------------------------------------------------------------
+  vllm:
+    build:
+      context: ../..
+      dockerfile: examples/docker/Dockerfile.vllm
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    environment:
+      # --- qr-sampler: entropy source ---
+      QR_ENTROPY_SOURCE_TYPE: "${QR_ENTROPY_SOURCE_TYPE:-quantum_grpc}"
+      QR_GRPC_SERVER_ADDRESS: "${QR_GRPC_SERVER_ADDRESS:-localhost:50051}"
+      QR_GRPC_MODE: "${QR_GRPC_MODE:-unary}"
+      QR_GRPC_TIMEOUT_MS: "${QR_GRPC_TIMEOUT_MS:-5000}"
+      QR_GRPC_METHOD_PATH: "${QR_GRPC_METHOD_PATH:-/qr_entropy.EntropyService/GetEntropy}"
+      QR_GRPC_STREAM_METHOD_PATH: "${QR_GRPC_STREAM_METHOD_PATH:-/qr_entropy.EntropyService/StreamEntropy}"
+      QR_GRPC_API_KEY: "${QR_GRPC_API_KEY:-}"
+      QR_GRPC_API_KEY_HEADER: "${QR_GRPC_API_KEY_HEADER:-api-key}"
+      QR_FALLBACK_MODE: "${QR_FALLBACK_MODE:-system}"
+
+      # --- qr-sampler: sampling parameters ---
+      QR_SAMPLE_COUNT: "${QR_SAMPLE_COUNT:-20480}"
+      QR_TEMPERATURE_STRATEGY: "${QR_TEMPERATURE_STRATEGY:-fixed}"
+      QR_FIXED_TEMPERATURE: "${QR_FIXED_TEMPERATURE:-0.7}"
+      QR_TOP_K: "${QR_TOP_K:-50}"
+      QR_TOP_P: "${QR_TOP_P:-0.9}"
+      QR_LOG_LEVEL: "${QR_LOG_LEVEL:-summary}"
+
+      # --- Hugging Face model ---
+      HF_MODEL: "${HF_MODEL:-Qwen/Qwen2.5-1.5B-Instruct}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+
+    # Uncomment if you have a co-located entropy server:
+    # depends_on:
+    #   - entropy-server
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped

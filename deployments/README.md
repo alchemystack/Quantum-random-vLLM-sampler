@@ -1,57 +1,38 @@
 # Deployment Profiles
 
-A deployment profile configures qr-sampler to connect to a specific entropy
-source. Each profile is a folder containing:
+Each deployment profile is a self-contained directory that configures qr-sampler
+to connect to a specific entropy source. Every profile contains:
 
-- **`.env`** -- Environment variables for qr-sampler and vLLM configuration.
-- **`docker-compose.override.yml`** (optional) -- Adds extra services, e.g. a
-  co-located entropy server.
-- **`README.md`** (optional) -- Setup notes specific to this profile.
-
-The main Docker Compose file (`examples/docker/docker-compose.yml`) runs vLLM
-with qr-sampler using system entropy by default. Profiles override only the
-entropy-related settings -- everything else stays the same.
+- **`docker-compose.yml`** -- Complete Docker Compose file. Runs vLLM with
+  qr-sampler and any co-located entropy servers. No external files needed.
+- **`.env.example`** -- Annotated environment variable template. Copy to `.env`
+  and customize.
+- **`README.md`** -- Setup guide specific to this entropy source.
 
 ## Available profiles
 
-| Profile | Entropy source | Description |
-|---------|---------------|-------------|
-| `_template/` | -- | Annotated template. Copy this to create your own. |
-| `urandom/` | `os.urandom()` via gRPC | Separate urandom gRPC server (good starting point). |
-| `firefly-1/` | Quantum RNG via gRPC | External QRNG server with API key authentication. |
+| Profile | Entropy source | What it runs |
+|---------|---------------|--------------|
+| [`urandom/`](urandom/) | `os.urandom()` via gRPC | vLLM + co-located gRPC entropy server |
+| [`firefly-1/`](firefly-1/) | Quantum RNG via gRPC | vLLM only (QRNG server is external) |
+| [`_template/`](_template/) | Your custom source | Starting point for new profiles |
 
-## Usage
+## Quick start (any profile)
 
-### No profile (system entropy)
-
-The simplest setup. vLLM uses `os.urandom()` directly -- no external server.
+Every profile follows the same three steps:
 
 ```bash
-cd examples/docker
+cd deployments/<profile>
+cp .env.example .env      # then edit .env with your settings
 docker compose up --build
 ```
 
-### With a profile (external entropy server)
-
-Pass the profile's `.env` file to override entropy settings:
+For example, to run with the urandom entropy server:
 
 ```bash
-cd examples/docker
-docker compose --env-file ../../deployments/firefly-1/.env up --build
-```
-
-### With a profile that adds services
-
-Some profiles include a `docker-compose.override.yml` that adds an entropy
-server container. Use `-f` to merge it:
-
-```bash
-cd examples/docker
-docker compose \
-  -f docker-compose.yml \
-  -f ../../deployments/urandom/docker-compose.override.yml \
-  --env-file ../../deployments/urandom/.env \
-  up --build
+cd deployments/urandom
+cp .env.example .env
+docker compose up --build
 ```
 
 ## Creating your own profile
@@ -62,18 +43,24 @@ docker compose \
    cp -r deployments/_template deployments/my-server
    ```
 
-2. Edit `deployments/my-server/.env` -- fill in your server address, gRPC
-   method paths, and authentication settings.
-
-3. (Optional) Add a `docker-compose.override.yml` if your entropy server should
-   run as a container alongside vLLM.
-
-4. Run:
+2. Edit `deployments/my-server/.env.example` with your server's address, gRPC
+   method paths, and authentication settings. Then:
 
    ```bash
-   cd examples/docker
-   docker compose --env-file ../../deployments/my-server/.env up --build
+   cd deployments/my-server
+   cp .env.example .env
    ```
+
+3. If your entropy server runs as a container alongside vLLM, uncomment the
+   `entropy-server` service in `docker-compose.yml`.
+
+4. Start:
+
+   ```bash
+   docker compose up --build
+   ```
+
+See [`_template/README.md`](_template/README.md) for full details.
 
 ## Security notes
 

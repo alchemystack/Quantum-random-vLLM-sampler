@@ -5,7 +5,7 @@
 qr-sampler is a [vLLM V1](https://github.com/vllm-project/vllm) LogitsProcessor plugin that replaces standard pseudorandom token sampling with entropy from external sources — quantum random number generators (QRNGs), processor timing jitter, or any hardware you connect via gRPC. It is designed for researchers studying non-deterministic LLM behavior and the potential influence of physical randomness on language model outputs.
 
 ```
-pip install qr-sampler
+pip install qr-sampler[grpc]
 ```
 
 ---
@@ -16,8 +16,8 @@ Standard LLM inference uses pseudorandom number generators (PRNGs) for token sam
 
 - **Quantum RNGs** — photon detectors, vacuum fluctuation devices, or any hardware QRNG over gRPC
 - **Processor timing jitter** — CPU clock variations as an entropy source (experimental)
-- **OS entropy** — `/dev/urandom` as a fallback or baseline
 - **Your own source** — implement the `EntropySource` ABC or connect any hardware via the gRPC protocol
+- **OS entropy** — `/dev/urandom` as a fallback or baseline (not useful for consciousness studies)
 
 ### Consciousness-research context
 
@@ -54,45 +54,89 @@ The processor registers via Python entry points — no vLLM source code modifica
 
 ## Quick start
 
-### 1. Install qr-sampler
+### Docker with an external entropy source (recommended)
+
+Each entropy source has a self-contained deployment profile under `deployments/`. Pick the one that matches your setup:
+
+| Profile | Entropy source | Description |
+|---------|---------------|-------------|
+| [`urandom/`](deployments/urandom/) | `os.urandom()` via gRPC | Local gRPC server for testing the full pipeline. **Start here.** |
+| [`firefly-1/`](deployments/firefly-1/) | Quantum RNG via gRPC | External QRNG server with API key auth. |
+| [`_template/`](deployments/_template/) | Your hardware | Copy and customize for your own entropy source. |
+
+#### 1. Choose a profile and configure
 
 ```bash
-# Core (uses os.urandom by default — works out of the box)
-pip install qr-sampler
-
-# With gRPC support (required for external entropy servers)
-pip install qr-sampler[grpc]
+cd deployments/urandom
+cp .env.example .env
+# Edit .env — set HF_TOKEN if using a gated model
 ```
 
-### 2. Start vLLM with qr-sampler
-
-qr-sampler registers automatically via the `vllm.logits_processors` entry point. No external server is needed — the default entropy source is `system` (`os.urandom`).
+#### 2. Launch
 
 ```bash
-vllm serve meta-llama/Llama-3.2-1B
+docker compose up --build
 ```
 
-Every token sampled by vLLM now uses entropy from `os.urandom()`. To connect an external entropy server (QRNG hardware, etc.), see [Deployment profiles](#deployment-profiles) below.
+This builds a vLLM image with qr-sampler baked in, starts any required entropy server containers, and connects everything automatically.
 
-### 3. Send inference requests
+#### 3. Send a request
 
 ```bash
 curl http://localhost:8000/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "meta-llama/Llama-3.2-1B",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "prompt": "The nature of consciousness is",
     "max_tokens": 100
   }'
 ```
 
-Per-request parameter overrides via `extra_args`:
+To connect your own QRNG hardware, copy the template and follow the [Setting up your own entropy source](#setting-up-your-own-entropy-source) guide:
+
+```bash
+cp -r deployments/_template deployments/my-qrng
+# Edit deployments/my-qrng/.env and deployments/my-qrng/docker-compose.yml
+```
+
+See [deployments/README.md](deployments/README.md) for the full guide.
+
+### Bare-metal install (without Docker)
+
+```bash
+# Install with gRPC support (required for external entropy servers)
+pip install qr-sampler[grpc]
+
+# Start vLLM — qr-sampler registers automatically via entry points
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
+```
+
+Configure the entropy source via environment variables:
+
+```bash
+export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
+export QR_GRPC_SERVER_ADDRESS=localhost:50051
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
+```
+
+### System entropy fallback
+
+Without an external entropy source, qr-sampler falls back to `os.urandom()`. This is useful for development and testing but does not provide the quantum randomness needed for consciousness-research experiments.
+
+```bash
+pip install qr-sampler
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
+```
+
+### Per-request parameter overrides
+
+Override sampling parameters on individual requests via `extra_args`:
 
 ```bash
 curl http://localhost:8000/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "meta-llama/Llama-3.2-1B",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "prompt": "The nature of consciousness is",
     "max_tokens": 100,
     "extra_args": {
@@ -103,29 +147,6 @@ curl http://localhost:8000/v1/completions \
     }
   }'
 ```
-
-### Docker quick start
-
-```bash
-cd examples/docker
-docker compose up --build
-```
-
-This builds a vLLM image with qr-sampler baked in and runs it with system entropy (no external server needed). To connect an external entropy server, use a [deployment profile](#deployment-profiles):
-
-```bash
-# With an external QRNG server (just pass its .env):
-docker compose --env-file ../../deployments/firefly-1/.env up --build
-
-# With a co-located urandom gRPC server (adds a container):
-docker compose \
-  -f docker-compose.yml \
-  -f ../../deployments/urandom/docker-compose.override.yml \
-  --env-file ../../deployments/urandom/.env \
-  up --build
-```
-
-See [examples/docker/docker-compose.yml](examples/docker/docker-compose.yml) for all configuration options.
 
 ---
 
@@ -220,8 +241,8 @@ All fallback-sourced entropy is flagged in diagnostic logs so downstream analysi
 
 | Source | Identifier | Description |
 |---|---|---|
-| **System** | `system` | `os.urandom()` — OS cryptographic RNG (default) |
 | **Quantum gRPC** | `quantum_grpc` | Remote entropy server via gRPC (any protocol) |
+| **System** | `system` | `os.urandom()` — OS cryptographic RNG (fallback/testing) |
 | **Timing noise** | `timing_noise` | CPU timing jitter (experimental) |
 | **Mock uniform** | `mock_uniform` | Configurable test source with seed/bias |
 
@@ -296,40 +317,45 @@ High-entropy (uncertain) distributions get higher temperatures; low-entropy (con
 
 ## Deployment profiles
 
-qr-sampler uses a two-layer architecture to separate the sampler plugin from entropy source configuration:
+Each entropy source has a self-contained deployment profile under `deployments/`. A profile contains everything needed to run vLLM with that entropy source:
 
-- **Layer 1 (source-agnostic core):** The sampler plugin + vLLM Docker image. Uses `system` entropy by default — works without any external server.
-- **Layer 2 (deployment profiles):** Named folders under `deployments/` that configure how to connect to a specific entropy source. Each contains a `.env` file and optionally a `docker-compose.override.yml`.
+- **`docker-compose.yml`** — Self-contained compose file with all services and environment variables.
+- **`.env.example`** — Annotated template. Copy to `.env` and customize.
+- **`README.md`** — Setup guide specific to this entropy source.
 
 ```
 deployments/
-  _template/     # Copy this to create your own profile
-  urandom/       # os.urandom() via a separate gRPC server (good starting point)
-  firefly-1/     # Example: external QRNG server with API key auth
+├── README.md                      # Overview and guide for creating profiles
+├── .gitignore                     # Excludes .env files with secrets
+├── _template/                     # Copy this to create your own profile
+│   ├── docker-compose.yml         # Annotated compose template
+│   ├── .env.example               # All available settings documented
+│   └── README.md                  # How to customize
+├── urandom/                       # os.urandom() via gRPC (start here)
+│   ├── docker-compose.yml         # vLLM + entropy-server (self-contained)
+│   ├── .env.example               # Defaults for urandom setup
+│   └── README.md                  # 3-step quickstart
+└── firefly-1/                     # External QRNG with API key auth
+    ├── docker-compose.yml         # vLLM only (QRNG server is external)
+    ├── .env.example               # Sanitized — no real API key
+    └── README.md                  # Server details, rate limits
 ```
 
-To use a profile, pass its `.env` to Docker Compose:
+To get started:
 
 ```bash
-cd examples/docker
-docker compose --env-file ../../deployments/my-server/.env up --build
+cd deployments/urandom
+cp .env.example .env
+docker compose up --build
 ```
 
-If the profile includes extra containers (like the urandom server), merge its override file:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f ../../deployments/urandom/docker-compose.override.yml \
-  --env-file ../../deployments/urandom/.env \
-  up --build
-```
-
-To create a profile for your own server, copy the template and fill in the `.env`:
+To create a profile for your own hardware:
 
 ```bash
 cp -r deployments/_template deployments/my-server
-# Edit deployments/my-server/.env with your server address, method paths, auth, etc.
+# Edit .env.example → .env, customize docker-compose.yml
+cd deployments/my-server
+docker compose up --build
 ```
 
 See [deployments/README.md](deployments/README.md) for the full guide.
@@ -387,18 +413,24 @@ pip install grpcio qr-sampler
 python my_qrng_server.py --port 50051
 ```
 
-4. **Configure qr-sampler** — create a deployment profile or set env vars directly:
+4. **Create a deployment profile** and launch with Docker:
 
 ```bash
-# Option A: Create a deployment profile (recommended for Docker)
-cp -r deployments/_template deployments/my-server
-# Edit deployments/my-server/.env:
+cp -r deployments/_template deployments/my-qrng
+# Edit deployments/my-qrng/.env:
 #   QR_ENTROPY_SOURCE_TYPE=quantum_grpc
-#   QR_GRPC_SERVER_ADDRESS=localhost:50051
+#   QR_GRPC_SERVER_ADDRESS=<your-server>:50051
+cd deployments/my-qrng
+cp .env.example .env
+docker compose up --build
+```
 
-# Option B: Set environment variables directly (macOS / Linux)
+Or configure directly via environment variables (bare-metal):
+
+```bash
 export QR_ENTROPY_SOURCE_TYPE=quantum_grpc
 export QR_GRPC_SERVER_ADDRESS=localhost:50051
+vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --gpu-memory-utilization 0.90
 ```
 
 The template handles all gRPC boilerplate (unary + bidirectional streaming, health checks, graceful shutdown). You only write the hardware-specific code.
@@ -440,13 +472,14 @@ This is critical for consciousness-research applications where the timing relati
 
 #### Deployment options
 
-**Docker:**
+**Docker (recommended):**
 
 ```bash
-cd examples/docker
-# Edit Dockerfile.entropy-server if needed
-docker build -f Dockerfile.entropy-server -t my-entropy-server ../..
-docker run -p 50051:50051 my-entropy-server
+cp -r deployments/_template deployments/my-server
+# Edit docker-compose.yml to add your entropy server container
+# Edit .env.example → .env with your configuration
+cd deployments/my-server
+docker compose up --build
 ```
 
 **systemd (Linux):**
@@ -614,23 +647,25 @@ examples/
 │   └── qrng_template_server.py    # Annotated template for custom QRNGs
 ├── docker/
 │   ├── Dockerfile.vllm            # vLLM + qr-sampler image (build-time install)
-│   ├── Dockerfile.entropy-server  # Docker image for entropy servers
-│   └── docker-compose.yml         # vLLM-only (source-agnostic, uses system entropy)
+│   └── Dockerfile.entropy-server  # Docker image for entropy servers
 └── systemd/
     ├── qr-entropy-server.service  # systemd unit file
     └── qr-entropy-server.env      # Environment file
 
 deployments/
-├── README.md                      # How profiles work, how to create your own
-├── .gitignore                     # Add profile names here to exclude credentials
+├── README.md                      # Overview, how to create profiles
+├── .gitignore                     # Excludes .env files with secrets
 ├── _template/                     # Copy this to create a new profile
-│   └── .env                       # Annotated env template with all settings
-├── urandom/                       # os.urandom() via a separate gRPC server
-│   ├── .env                       # Points vLLM at entropy-server:50051
-│   ├── docker-compose.override.yml # Adds the entropy-server container
+│   ├── docker-compose.yml         # Annotated compose template
+│   ├── .env.example               # All settings documented
+│   └── README.md                  # How to customize
+├── urandom/                       # os.urandom() via gRPC (start here)
+│   ├── docker-compose.yml         # vLLM + entropy-server (self-contained)
+│   ├── .env.example               # Defaults for urandom setup
 │   └── README.md                  # Setup guide
-└── firefly-1/                     # Example: external QRNG with API key auth
-    ├── .env                       # 10.0.0.115:50051, qrng.QuantumRNG protocol
+└── firefly-1/                     # External QRNG with API key auth
+    ├── docker-compose.yml         # vLLM only (QRNG server is external)
+    ├── .env.example               # Sanitized — no real API key
     └── README.md                  # Server details, rate limits
 ```
 

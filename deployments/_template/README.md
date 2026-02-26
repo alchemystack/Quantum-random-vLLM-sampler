@@ -1,7 +1,7 @@
 # Deployment Profile Template
 
-This is a template for creating new deployment profiles. Copy this folder
-and customize it for your entropy source.
+Starting point for creating a new deployment profile. Copy this folder and
+customize it for your entropy source.
 
 ## Quick start
 
@@ -9,37 +9,37 @@ and customize it for your entropy source.
 
    ```bash
    cp -r deployments/_template deployments/my-server
+   cd deployments/my-server
    ```
 
-2. Edit `deployments/my-server/.env`:
+2. Configure your environment:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Edit `.env`:
    - Set `QR_GRPC_SERVER_ADDRESS` to your server's address.
    - Set `QR_GRPC_METHOD_PATH` to match your server's proto service/method.
    - Set `QR_GRPC_STREAM_METHOD_PATH` (or leave empty to disable streaming).
    - Add `QR_GRPC_API_KEY` if your server requires authentication.
 
-3. Run vLLM with your profile:
+3. Start:
 
    ```bash
-   cd examples/docker
-   docker compose --env-file ../../deployments/my-server/.env up --build
+   docker compose up --build
    ```
 
-## Adding an entropy server container
+## Adding a co-located entropy server
 
-If your entropy server should run as a Docker container alongside vLLM, create
-a `docker-compose.override.yml` in your profile folder. See
-`deployments/urandom/docker-compose.override.yml` for an example.
+If your entropy server should run as a Docker container alongside vLLM,
+uncomment the `entropy-server` service block in `docker-compose.yml` and
+configure it with your server's Dockerfile or image. See
+[`../urandom/docker-compose.yml`](../urandom/docker-compose.yml) for a
+working example.
 
-Then run with:
-
-```bash
-cd examples/docker
-docker compose \
-  -f docker-compose.yml \
-  -f ../../deployments/my-server/docker-compose.override.yml \
-  --env-file ../../deployments/my-server/.env \
-  up --build
-```
+When using a co-located server, set the gRPC address to the Docker service
+name (e.g., `entropy-server:50051`) instead of `localhost`.
 
 ## Finding the right gRPC method path
 
