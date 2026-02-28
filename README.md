@@ -119,6 +119,50 @@ export QR_GRPC_SERVER_ADDRESS=localhost:50051
 vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096 --gpu-memory-utilization 0.80
 ```
 
+### Apple Silicon (macOS)
+
+qr-sampler works on Apple Silicon via [vllm-metal](https://github.com/vllm-project/vllm-metal), a community-maintained vLLM plugin under the official `vllm-project` GitHub org. It uses MLX under the hood but exposes the same vLLM API and plugin system — same entry points, same endpoints, same `curl` commands.
+
+#### 1. Install vllm-metal
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
+```
+
+This creates a virtual environment at `~/.venv-vllm-metal` with vLLM and all dependencies. Requires Python 3.12+.
+
+#### 2. Install qr-sampler
+
+```bash
+source ~/.venv-vllm-metal/bin/activate
+pip install qr-sampler
+```
+
+#### 3. Start the server
+
+```bash
+source ~/.venv-vllm-metal/bin/activate
+vllm serve Qwen/Qwen2.5-1.5B-Instruct
+```
+
+qr-sampler registers automatically via the same `vllm.logits_processors` entry point — no additional configuration needed. The plugin is discovered at startup and processes every token.
+
+#### 4. Send a request
+
+```bash
+curl http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "prompt": "The nature of consciousness is",
+    "max_tokens": 100
+  }'
+```
+
+All configuration (entropy sources, temperature strategies, per-request overrides) works identically to the NVIDIA setup. The only difference is how vLLM itself is installed.
+
+> **Note:** The Docker deployment profiles use NVIDIA GPU images and are not compatible with Apple Silicon. Use the bare-metal install above instead.
+
 ### System entropy fallback
 
 Without an external entropy source, qr-sampler falls back to `os.urandom()`. This is useful for development and testing but does not provide the quantum randomness needed for consciousness-research experiments. To use system entropy, set `QR_ENTROPY_SOURCE_TYPE=system` (this is the default).
