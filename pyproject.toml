@@ -46,6 +46,7 @@ dev = [
     "pre-commit>=3.0",
     "bandit>=1.7.0",
 ]
+openentropy = ["openentropy"]
 
 [project.entry-points."vllm.logits_processors"]
 qr_sampler = "qr_sampler.processor:QRSamplerLogitsProcessor"
@@ -55,6 +56,7 @@ system = "qr_sampler.entropy.system:SystemEntropySource"
 quantum_grpc = "qr_sampler.entropy.quantum:QuantumGrpcSource"
 timing_noise = "qr_sampler.entropy.timing:TimingNoiseSource"
 mock_uniform = "qr_sampler.entropy.mock:MockUniformSource"
+openentropy = "qr_sampler.entropy.openentropy_source:OpenEntropySource"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -96,6 +98,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "openentropy.*"
 ignore_missing_imports = true
 
 [tool.coverage.run]
