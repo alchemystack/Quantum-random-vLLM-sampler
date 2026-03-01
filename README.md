@@ -179,7 +179,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 All configuration (entropy sources, temperature strategies, per-request overrides) works identically to the NVIDIA setup. The only difference is how vLLM itself is installed.
 
-> **Note:** The Docker deployment profiles use NVIDIA GPU images and are not compatible with Apple Silicon. Use the bare-metal install above instead. To use Open WebUI on Apple Silicon, see the [Web UI](#web-ui) section.
+> **Note:** The Docker deployment profiles are not compatible with Apple Silicon. Docker on macOS runs a Linux VM with no Metal GPU passthrough, so vllm-metal must run natively. To use Open WebUI on Apple Silicon, see the [Web UI](#web-ui) section.
 
 ### System entropy fallback
 
