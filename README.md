@@ -278,6 +278,7 @@ All fallback-sourced entropy is flagged in diagnostic logs so downstream analysi
 | **System** | `system` | `os.urandom()` — OS cryptographic RNG (fallback/testing) |
 | **Timing noise** | `timing_noise` | CPU timing jitter (experimental) |
 | **Mock uniform** | `mock_uniform` | Configurable test source with seed/bias |
+| **OpenEntropy** | `openentropy` | 63 hardware noise sources (thermal, timing, microarch, GPU) — local, no network |
 
 ### Fallback behavior
 
@@ -291,6 +292,38 @@ Configure with `QR_FALLBACK_MODE`:
 - `system` — fall back to `os.urandom()` (default)
 - `mock_uniform` — fall back to the mock source
 - `error` — raise immediately, no fallback
+
+### OpenEntropy
+
+[OpenEntropy](https://github.com/amenti-labs/openentropy) harvests entropy from 63 hardware noise sources on the local machine — thermal sensors, CPU timing jitter, memory timing, GPU scheduling, and more. No network, no API keys, no gRPC server needed.
+
+Install:
+
+```bash
+pip install openentropy
+```
+
+Configure:
+
+```bash
+export QR_ENTROPY_SOURCE_TYPE=openentropy
+export QR_OE_CONDITIONING=raw   # raw (research default) | vonneumann | sha256
+```
+
+List available sources on your machine:
+
+```python
+from openentropy import detect_available_sources
+print([s["name"] for s in detect_available_sources()])
+```
+
+To sample from specific sources only, set `QR_OE_SOURCES` to a comma-separated list:
+
+```bash
+export QR_OE_SOURCES=clock_jitter,dram_row_buffer
+```
+
+See [`deployments/openentropy/`](deployments/openentropy/) for the full deployment profile.
 
 ### Third-party entropy sources
 
