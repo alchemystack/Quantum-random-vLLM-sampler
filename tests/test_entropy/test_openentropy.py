@@ -9,6 +9,7 @@ import pytest
 from qr_sampler.config import QRSamplerConfig
 from qr_sampler.exceptions import EntropyUnavailableError
 
+_POOL_TARGET = "qr_sampler.entropy.openentropy_source.EntropyPool"
 
 def _make_config(**overrides: object) -> QRSamplerConfig:
     """Create a QRSamplerConfig with openentropy-relevant defaults."""
@@ -36,7 +37,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -51,7 +52,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -66,7 +67,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -82,7 +83,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -100,7 +101,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -121,7 +122,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -138,7 +139,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -157,7 +158,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -179,7 +180,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -205,7 +206,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 
@@ -238,7 +239,7 @@ class TestOpenEntropySource:
 
         with (
             patch("qr_sampler.entropy.openentropy_source._OPENENTROPY_AVAILABLE", True),
-            patch("qr_sampler.entropy.openentropy_source.EntropyPool", mock_pool_class, create=True),
+            patch(_POOL_TARGET, mock_pool_class, create=True),
         ):
             from qr_sampler.entropy.openentropy_source import OpenEntropySource
 

@@ -119,7 +119,11 @@ class OpenEntropySource(EntropySource):
                 parallel=self._config.oe_parallel,
                 timeout=self._config.oe_timeout,
             )
-            return self._pool.get_bytes(n, conditioning=self._config.oe_conditioning)
+            raw_bytes = self._pool.get_bytes(
+                n, conditioning=self._config.oe_conditioning
+            )
+            result: bytes = bytes(raw_bytes)
+            return result
         except RuntimeError as e:
             raise EntropyUnavailableError(f"OpenEntropy failed: {e}") from e
 
