@@ -52,3 +52,4 @@ node_modules/
 
 # Setuptools SCM
 src/qr_sampler/_version.py
+.webui_secret_key

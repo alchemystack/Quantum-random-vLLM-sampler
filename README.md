@@ -119,6 +119,68 @@ export QR_GRPC_SERVER_ADDRESS=localhost:50051
 vllm serve Qwen/Qwen2.5-1.5B-Instruct --dtype half --max-model-len 8096 --gpu-memory-utilization 0.80
 ```
 
+### Apple Silicon (macOS)
+
+qr-sampler works on Apple Silicon via [vllm-metal](https://github.com/vllm-project/vllm-metal), a community-maintained vLLM plugin under the official `vllm-project` GitHub org. It uses MLX under the hood but exposes the same vLLM API and plugin system — same entry points, same endpoints, same `curl` commands.
+
+vllm-metal works with MLX-format models from the [mlx-community](https://huggingface.co/mlx-community) collection on Hugging Face. These are pre-converted and quantized for Apple Silicon — pick one that fits your available memory.
+
+> **Prerequisite:** vllm-metal currently does not load custom logits processors registered via entry points — it creates an empty `LogitsProcessors()` instead of calling `build_logitsprocs()`. [PR #124](https://github.com/vllm-project/vllm-metal/pull/124) fixes this with a 9-line patch that mirrors `GPUModelRunner`'s pattern. Until it is merged, you will need to apply the patch manually or install from the PR branch. Without it, qr-sampler's plugin will be silently skipped.
+
+#### 1. Install vllm-metal
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
+```
+
+This creates a virtual environment at `~/.venv-vllm-metal` with vLLM and all dependencies. Requires Python 3.12+.
+
+#### 2. Install qr-sampler
+
+```bash
+source ~/.venv-vllm-metal/bin/activate
+pip install qr-sampler
+```
+
+#### 3. Start the server
+
+```bash
+source ~/.venv-vllm-metal/bin/activate
+vllm serve mlx-community/Qwen3-0.6B-4bit
+```
+
+qr-sampler registers automatically via the same `vllm.logits_processors` entry point — no additional configuration needed. Look for this line in the server logs to confirm the plugin is active:
+
+```
+QRSamplerLogitsProcessor initialized: vocab_size=..., entropy_source=system+system, amplifier=zscore_mean, temperature=fixed
+```
+
+#### 4. Send a request
+
+```bash
+# Completions
+curl http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "prompt": "The nature of consciousness is",
+    "max_tokens": 100
+  }'
+
+# Chat completions
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "messages": [{"role": "user", "content": "Tell me about quantum randomness"}],
+    "max_tokens": 100
+  }'
+```
+
+All configuration (entropy sources, temperature strategies, per-request overrides) works identically to the NVIDIA setup. The only difference is how vLLM itself is installed.
+
+> **Note:** The Docker deployment profiles are not compatible with Apple Silicon. Docker on macOS runs a Linux VM with no Metal GPU passthrough, so vllm-metal must run natively. To use Open WebUI on Apple Silicon, see the [Web UI](#web-ui) section.
+
 ### System entropy fallback
 
 Without an external entropy source, qr-sampler falls back to `os.urandom()`. This is useful for development and testing but does not provide the quantum randomness needed for consciousness-research experiments. To use system entropy, set `QR_ENTROPY_SOURCE_TYPE=system` (this is the default).
@@ -149,7 +211,9 @@ curl http://localhost:8000/v1/completions \
 
 qr-sampler works with [Open WebUI](https://github.com/open-webui/open-webui), a
 self-hosted ChatGPT-style interface that connects to vLLM's OpenAI-compatible
-API. Every deployment profile includes it as an optional service — add
+API.
+
+**NVIDIA / Linux:** Every deployment profile includes Open WebUI as an optional service — add
 `--profile ui` to start it alongside vLLM:
 
 ```bash
@@ -157,8 +221,19 @@ cd deployments/urandom
 docker compose --profile ui up --build
 ```
 
-Then open http://localhost:3000 to start chatting. Without `--profile ui`, Open
-WebUI does not start and nothing changes.
+**Apple Silicon:** The deployment profiles use NVIDIA GPU images, but Open WebUI itself is just a web app. Run it standalone in Docker and point it at your vllm-metal server:
+
+```bash
+docker run -d -p 3000:8080 \
+  --add-host=host.docker.internal:host-gateway \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 \
+  -e OPENAI_API_KEY=not-needed \
+  -e WEBUI_AUTH=false \
+  --name open-webui \
+  ghcr.io/open-webui/open-webui:main
+```
+
+Then open http://localhost:3000 to start chatting.
 
 ### Controlling qr-sampler from the UI
 

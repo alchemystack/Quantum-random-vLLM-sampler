@@ -497,12 +497,9 @@ class QRSamplerLogitsProcessor:
         """
         if isinstance(tensor, np.ndarray):
             return tensor
-        # torch.Tensor — use .numpy() for zero-copy on CPU.
+        # .cpu() moves GPU tensors (CUDA/MPS) to host memory; no-op on CPU.
         try:
-            if tensor.is_cuda:
-                result: np.ndarray = tensor.detach().cpu().numpy()
-            else:
-                result = tensor.detach().numpy()
+            result: np.ndarray = tensor.detach().cpu().numpy()
             return result
         except AttributeError:
             return np.asarray(tensor)
