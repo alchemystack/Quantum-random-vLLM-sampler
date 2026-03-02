@@ -6,12 +6,14 @@ in the entropy source.
 """
 
 from qr_sampler.amplification.base import AmplificationResult, SignalAmplifier
+from qr_sampler.amplification.ecdf import ECDFAmplifier
 from qr_sampler.amplification.registry import AmplifierRegistry
 from qr_sampler.amplification.zscore import ZScoreMeanAmplifier
 
 __all__ = [
     "AmplificationResult",
     "AmplifierRegistry",
+    "ECDFAmplifier",
     "SignalAmplifier",
     "ZScoreMeanAmplifier",
 ]

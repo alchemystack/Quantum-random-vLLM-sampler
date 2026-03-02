@@ -37,6 +37,7 @@ _PER_REQUEST_FIELDS: frozenset[str] = frozenset(
         "top_p",
         "log_level",
         "diagnostic_mode",
+        "oe_conditioning",
     }
 )
 
@@ -151,6 +152,11 @@ class QRSamplerConfig(BaseSettings):
         default=1e-10,
         description="Clamp u to (epsilon, 1-epsilon) to avoid degenerate CDF",
     )
+    ecdf_calibration_samples: int = Field(
+        default=2000,
+        ge=100,
+        description="Samples for ECDF calibration",
+    )
 
     # --- Temperature Strategy (per-request overridable) ---
 
@@ -199,6 +205,25 @@ class QRSamplerConfig(BaseSettings):
     diagnostic_mode: bool = Field(
         default=False,
         description="Store all token records in memory for analysis",
+    )
+
+    # --- OpenEntropy (oe_conditioning per-request, others infrastructure) ---
+
+    oe_conditioning: str = Field(
+        default="raw",
+        description="OpenEntropy conditioning mode: raw, sha256, vonneumann",
+    )
+    oe_sources: str = Field(
+        default="",
+        description="Comma-separated OpenEntropy source names. Empty = all available.",
+    )
+    oe_parallel: bool = Field(
+        default=True,
+        description="Collect OpenEntropy sources in parallel",
+    )
+    oe_timeout: float = Field(
+        default=5.0,
+        description="OpenEntropy collection timeout in seconds",
     )
 
 

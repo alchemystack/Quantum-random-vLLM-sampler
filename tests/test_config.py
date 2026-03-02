@@ -248,6 +248,9 @@ class TestNonOverridableFields:
             "grpc_api_key_header",
             "fallback_mode",
             "entropy_source_type",
+            "oe_sources",
+            "oe_parallel",
+            "oe_timeout",
         ],
     )
     def test_infrastructure_field_rejected(
@@ -270,6 +273,9 @@ class TestNonOverridableFields:
             "grpc_api_key_header",
             "fallback_mode",
             "entropy_source_type",
+            "oe_sources",
+            "oe_parallel",
+            "oe_timeout",
         ],
     )
     def test_infrastructure_field_rejected_in_validate(self, field_name: str) -> None:
@@ -385,3 +391,45 @@ class TestModelCopy:
         assert copy.top_p == default_config.top_p
         assert copy.fixed_temperature == default_config.fixed_temperature
         assert copy.grpc_server_address == default_config.grpc_server_address
+
+
+# ---------------------------------------------------------------------------
+# OpenEntropy config fields
+# ---------------------------------------------------------------------------
+
+
+class TestOpenEntropyConfigFields:
+    """Verify OpenEntropy config fields have correct defaults and overrides."""
+
+    def test_oe_defaults(self, default_config: QRSamplerConfig) -> None:
+        """Verify OpenEntropy field defaults."""
+        assert default_config.oe_conditioning == "raw"
+        assert default_config.oe_sources == ""
+        assert default_config.oe_parallel is True
+        assert default_config.oe_timeout == 5.0
+
+    def test_oe_conditioning_env_var(self) -> None:
+        """Verify QR_OE_CONDITIONING env var is loaded."""
+        with patch.dict(os.environ, {"QR_OE_CONDITIONING": "sha256"}):
+            config = QRSamplerConfig(_env_file=None)  # type: ignore[call-arg]
+        assert config.oe_conditioning == "sha256"
+
+    def test_oe_conditioning_per_request(self, default_config: QRSamplerConfig) -> None:
+        """Verify oe_conditioning can be overridden per-request."""
+        result = resolve_config(default_config, {"qr_oe_conditioning": "vonneumann"})
+        assert result.oe_conditioning == "vonneumann"
+
+    def test_oe_sources_infra_locked(self) -> None:
+        """Verify oe_sources cannot be overridden per-request."""
+        with pytest.raises(ConfigValidationError, match="infrastructure field"):
+            validate_extra_args({"qr_oe_sources": "clock_jitter"})
+
+    def test_oe_parallel_infra_locked(self) -> None:
+        """Verify oe_parallel cannot be overridden per-request."""
+        with pytest.raises(ConfigValidationError, match="infrastructure field"):
+            validate_extra_args({"qr_oe_parallel": "false"})
+
+    def test_oe_timeout_infra_locked(self) -> None:
+        """Verify oe_timeout cannot be overridden per-request."""
+        with pytest.raises(ConfigValidationError, match="infrastructure field"):
+            validate_extra_args({"qr_oe_timeout": "10.0"})
